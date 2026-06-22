@@ -802,3 +802,5 @@ adb connect 192.168.1.50:37001
 The automation drives the WhatsApp UI. WhatsApp must be installed and logged in on the device. The app does not need to be in the foreground — Appium launches it automatically.
 
 For WhatsApp Business, pass `"business": true` in the request or use `--business` in the CLI.
+# adb-automation
+ADB automation with endpoints
