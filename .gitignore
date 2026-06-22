@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+adb_automation.sqlite3
+*.sqlite3

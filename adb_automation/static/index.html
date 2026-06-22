@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ADB Automation Console</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">WhatsApp ADB</p>
+        <h1>Device Console</h1>
+      </div>
+      <div class="status-strip">
+        <span id="apiKeyState" class="pill muted">API key unset</span>
+        <button id="refreshButton" class="button secondary" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="panel devices-panel" aria-labelledby="devicesHeading">
+        <div class="panel-header">
+          <div>
+            <h2 id="devicesHeading">Devices</h2>
+            <p id="deviceCount" class="subtle">0 registered</p>
+          </div>
+          <p id="lastRefresh" class="subtle">Not refreshed</p>
+        </div>
+
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Endpoint</th>
+                <th>ADB</th>
+                <th>Lease</th>
+                <th>Last seen</th>
+                <th class="action-column">Action</th>
+              </tr>
+            </thead>
+            <tbody id="devicesBody">
+              <tr>
+                <td colspan="6" class="empty-cell">No devices loaded</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside class="side-stack">
+        <section class="panel" aria-labelledby="authHeading">
+          <h2 id="authHeading">Access</h2>
+          <form id="apiKeyForm" class="form-grid">
+            <label>
+              <span>API key</span>
+              <input id="apiKeyInput" name="api_key" type="password" autocomplete="off">
+            </label>
+            <div class="button-row">
+              <button class="button primary" type="submit">Save</button>
+              <button id="clearApiKeyButton" class="button secondary" type="button">Clear</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel" aria-labelledby="pairHeading">
+          <h2 id="pairHeading">Pair Device</h2>
+          <form id="pairForm" class="form-grid">
+            <label>
+              <span>Name</span>
+              <input name="name" type="text" autocomplete="off" required>
+            </label>
+            <div class="split-fields">
+              <label>
+                <span>Pair IP</span>
+                <input id="pairIpInput" name="pair_ip" type="text" autocomplete="off" required>
+              </label>
+              <label>
+                <span>Pair port</span>
+                <input name="pair_port" type="number" min="1" max="65535" inputmode="numeric" required>
+              </label>
+            </div>
+            <label>
+              <span>Pairing code</span>
+              <input name="pairing_code" type="text" inputmode="numeric" autocomplete="one-time-code" required>
+            </label>
+            <div class="split-fields">
+              <label>
+                <span>Connect IP</span>
+                <input id="connectIpInput" name="connect_ip" type="text" autocomplete="off" required>
+              </label>
+              <label>
+                <span>Connect port</span>
+                <input name="connect_port" type="number" min="1" max="65535" inputmode="numeric" required>
+              </label>
+            </div>
+            <button class="button primary" type="submit">Pair and Save</button>
+          </form>
+        </section>
+
+        <section class="panel" aria-labelledby="saveHeading">
+          <h2 id="saveHeading">Save Device</h2>
+          <form id="deviceForm" class="form-grid">
+            <label>
+              <span>Name</span>
+              <input name="name" type="text" autocomplete="off" required>
+            </label>
+            <div class="split-fields">
+              <label>
+                <span>IP</span>
+                <input name="ip" type="text" autocomplete="off" required>
+              </label>
+              <label>
+                <span>Port</span>
+                <input name="port" type="number" min="1" max="65535" inputmode="numeric" required>
+              </label>
+            </div>
+            <button class="button primary" type="submit">Save Device</button>
+          </form>
+        </section>
+      </aside>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
