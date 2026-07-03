@@ -1,11 +1,29 @@
+import os
+import shutil
 import subprocess
+import sys
 
 from .errors import AdbError
 
 
+def _find_adb():
+    adb = shutil.which("adb")
+    if adb:
+        return adb
+    android_home = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+    if android_home:
+        suffix = ".exe" if sys.platform == "win32" else ""
+        candidate = os.path.join(android_home, "platform-tools", f"adb{suffix}")
+        if os.path.isfile(candidate):
+            return candidate
+    return "adb"
+
+
+_ADB = _find_adb()
+
+
 def run_adb(command_list, serial=None):
-    """Execute ADB commands. Pass serial to target one Wi-Fi device."""
-    command = ["adb"]
+    command = [_ADB]
     if serial:
         command.extend(["-s", serial])
     command.extend(command_list)

@@ -15,11 +15,17 @@ SEND_BUTTON_DESCRIPTIONS = (
 )
 SEND_BUTTON_TIMEOUT_SECONDS = 10
 WHATSAPP_ACTIVITY_WAIT_SECONDS = 2
+MESSAGE_ENTRY_TIMEOUT_SECONDS = 8
 DEVICE_DOWNLOAD_DIR = "/storage/emulated/0/Download"
 CONTACT_PICKER_TEXTS = (
     "Send to",
     "Enviar para",
 )
+HUMAN_TYPE_BURST_SIZES = (3, 4, 2, 5, 3, 6)
+HUMAN_TYPE_PAUSE_SECONDS = 0.35
+HUMAN_CORRECTION_PAUSE_SECONDS = 0.5
+HUMAN_CORRECTION_FRAGMENTS = ("teh", "kk", "..", "hm")
+ADB_INPUT_SHELL_SPECIALS = set("'\"`$&|;<>()*?!#[]{}~\\")
 
 
 def normalize_phone(phone):
@@ -96,6 +102,17 @@ def send_button_selectors(whatsapp_package):
     )
 
 
+def message_entry_selectors(whatsapp_package):
+    return (
+        {"resourceId": f"{whatsapp_package}:id/entry"},
+        {"resourceId": f"{whatsapp_package}:id/mentionable_entry"},
+        {"resourceIdMatches": r".*:id/entry"},
+        {"resourceIdMatches": r".*:id/mentionable_entry"},
+        {"className": "android.widget.EditText"},
+        {"classNameMatches": r".*EditText"},
+    )
+
+
 def contact_picker_selectors():
     return (
         *({"text": text} for text in CONTACT_PICKER_TEXTS),
@@ -127,6 +144,46 @@ def is_contact_picker_visible(device):
         if selector_exists(selector):
             return True
     return False
+
+
+def focus_message_entry(
+    serial,
+    whatsapp_package,
+    timeout=MESSAGE_ENTRY_TIMEOUT_SECONDS,
+    device_connector=None,
+):
+    if device_connector is None:
+        device_connector = connect_uiautomator_device
+
+    device = device_connector(serial)
+    wait_for_whatsapp_activity(device, whatsapp_package)
+    deadline = time.monotonic() + timeout
+    last_error = None
+
+    while True:
+        for selector_kwargs in message_entry_selectors(whatsapp_package):
+            try:
+                selector = device(**selector_kwargs)
+                if selector_exists(selector):
+                    selector.click()
+                    time.sleep(0.4)
+                    return
+            except Exception as exc:
+                last_error = exc
+
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.25)
+
+    details = (
+        f" Last uiautomator2 error: {last_error}"
+        if last_error is not None
+        else ""
+    )
+    raise AutomationError(
+        "Could not find the WhatsApp message compose field with uiautomator2."
+        + details
+    )
 
 
 def click_send_button(
@@ -219,8 +276,29 @@ def launch_whatsapp_direct_media(
     run_adb(intent_cmd, serial=serial)
 
 
-def launch_whatsapp_text(serial, phone, text, whatsapp_package):
+def launch_whatsapp_text(serial, phone, whatsapp_package):
     print(f"[*] Launching WhatsApp chat intent for +{phone}...")
+
+    run_adb(
+        [
+            "shell",
+            "am",
+            "start",
+            "-a",
+            "android.intent.action.VIEW",
+            "-d",
+            f"https://wa.me/{phone}",
+            "-p",
+            whatsapp_package,
+            "-f",
+            "0x14000000",
+        ],
+        serial=serial,
+    )
+
+
+def launch_whatsapp_prefilled_text(serial, phone, text, whatsapp_package):
+    print(f"[*] Falling back to WhatsApp prefilled text intent for +{phone}...")
     encoded_text = urllib.parse.quote(text)
     whatsapp_url = f"https://wa.me/{phone}?text={encoded_text}"
 
@@ -240,6 +318,81 @@ def launch_whatsapp_text(serial, phone, text, whatsapp_package):
         ],
         serial=serial,
     )
+
+
+def escape_adb_input_text(text):
+    escaped = []
+    for char in text:
+        if char == " ":
+            escaped.append("%s")
+        elif char in ADB_INPUT_SHELL_SPECIALS:
+            escaped.append("\\" + char)
+        else:
+            escaped.append(char)
+    return "".join(escaped)
+
+
+def type_text_chunk(serial, text):
+    if not text:
+        return
+    run_adb(["shell", "input", "text", escape_adb_input_text(text)], serial=serial)
+
+
+def press_backspace(serial, count=1):
+    for _ in range(count):
+        run_adb(["shell", "input", "keyevent", "KEYCODE_DEL"], serial=serial)
+        time.sleep(0.08)
+
+
+def correction_positions(text):
+    if not text:
+        return ()
+    if len(text) <= 2:
+        return (0,)
+
+    correction_count = max(1, min(4, (len(text) // 18) + 1))
+    positions = []
+    for index in range(correction_count):
+        position = int(((index + 1) * len(text)) / (correction_count + 1))
+        positions.append(max(1, min(len(text) - 1, position)))
+    return tuple(sorted(set(positions)))
+
+
+def type_visible_text(serial, text, sleep_interval=HUMAN_TYPE_PAUSE_SECONDS):
+    cursor = 0
+    burst_index = 0
+    while cursor < len(text):
+        burst_size = HUMAN_TYPE_BURST_SIZES[burst_index % len(HUMAN_TYPE_BURST_SIZES)]
+        chunk = text[cursor : cursor + burst_size]
+        type_text_chunk(serial, chunk)
+        cursor += len(chunk)
+        burst_index += 1
+        time.sleep(sleep_interval)
+
+
+def inject_visible_correction(serial, correction_index):
+    fragment = HUMAN_CORRECTION_FRAGMENTS[
+        correction_index % len(HUMAN_CORRECTION_FRAGMENTS)
+    ]
+    type_text_chunk(serial, fragment)
+    time.sleep(HUMAN_CORRECTION_PAUSE_SECONDS)
+    press_backspace(serial, len(fragment))
+    time.sleep(HUMAN_CORRECTION_PAUSE_SECONDS)
+
+
+def human_type_text(serial, text):
+    if not text:
+        return
+
+    cursor = 0
+    for correction_index, position in enumerate(correction_positions(text)):
+        if position > cursor:
+            type_visible_text(serial, text[cursor:position])
+            cursor = position
+        inject_visible_correction(serial, correction_index)
+
+    if cursor < len(text):
+        type_visible_text(serial, text[cursor:])
 
 
 def send_whatsapp(serial, phone, text=None, file_path=None, business=False):
@@ -289,11 +442,24 @@ def send_whatsapp(serial, phone, text=None, file_path=None, business=False):
         )
         fail_on_contact_picker = True
     else:
-        launch_whatsapp_text(serial, phone, text, whatsapp_package)
+        launch_whatsapp_text(serial, phone, whatsapp_package)
         fail_on_contact_picker = False
 
     print("[*] Waiting for WhatsApp UI to settle...")
     time.sleep(3.5)
+
+    if not file_path:
+        print("[*] Focusing WhatsApp message field...")
+        try:
+            focus_message_entry(serial, whatsapp_package)
+        except AutomationError as exc:
+            print(f"[WARN] {exc}")
+            launch_whatsapp_prefilled_text(serial, phone, text, whatsapp_package)
+            print("[*] Waiting for WhatsApp prefilled text UI to settle...")
+            time.sleep(3.5)
+        else:
+            print("[*] Typing message with human-like pacing...")
+            human_type_text(serial, text)
 
     print("[*] Finding WhatsApp send button with uiautomator2...")
     click_send_button(

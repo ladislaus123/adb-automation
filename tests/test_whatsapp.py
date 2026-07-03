@@ -9,6 +9,44 @@ from adb_automation.config import (
 )
 
 
+def launched_view_urls(adb_commands):
+    urls = []
+    for command in adb_commands:
+        if command[:4] == ["shell", "am", "start", "-a"] and "-d" in command:
+            urls.append(command[command.index("-d") + 1])
+    return urls
+
+
+def decode_adb_input_text(value):
+    decoded = []
+    index = 0
+    while index < len(value):
+        if value.startswith("%s", index):
+            decoded.append(" ")
+            index += 2
+            continue
+
+        if value[index] == "\\" and index + 1 < len(value):
+            decoded.append(value[index + 1])
+            index += 2
+            continue
+
+        decoded.append(value[index])
+        index += 1
+
+    return "".join(decoded)
+
+
+def replay_adb_text_buffer(adb_commands):
+    text = []
+    for command in adb_commands:
+        if command[:3] == ["shell", "input", "text"]:
+            text.extend(decode_adb_input_text(command[3]))
+        elif command == ["shell", "input", "keyevent", "KEYCODE_DEL"] and text:
+            text.pop()
+    return "".join(text)
+
+
 class FakeUiSelector:
     def __init__(self, exists=False):
         self.exists = exists
@@ -146,11 +184,87 @@ class WhatsappSendButtonTests(unittest.TestCase):
                 device_connector=lambda serial: device,
             )
 
-    def test_send_whatsapp_clicks_uiautomator_send_button(self):
+    def test_focus_message_entry_prefers_resource_id(self):
+        device = FakeUiDevice()
+        target = device.add_selector(
+            {"resourceId": f"{WHATSAPP_MESSENGER_PACKAGE}:id/entry"}
+        )
+
+        with patch("adb_automation.whatsapp.time.sleep"):
+            whatsapp.focus_message_entry(
+                "192.168.10.21:5555",
+                WHATSAPP_MESSENGER_PACKAGE,
+                timeout=0,
+                device_connector=lambda serial: device,
+            )
+
+        self.assertTrue(target.clicked)
+        self.assertIn({"resourceId": "com.whatsapp:id/entry"}, device.calls)
+        self.assertEqual(
+            device.wait_activity_calls,
+            [("com.whatsapp", whatsapp.WHATSAPP_ACTIVITY_WAIT_SECONDS)],
+        )
+
+    def test_focus_message_entry_falls_back_to_edit_text(self):
+        device = FakeUiDevice()
+        target = device.add_selector({"className": "android.widget.EditText"})
+
+        with patch("adb_automation.whatsapp.time.sleep"):
+            whatsapp.focus_message_entry(
+                "192.168.10.21:5555",
+                WHATSAPP_MESSENGER_PACKAGE,
+                timeout=0,
+                device_connector=lambda serial: device,
+            )
+
+        self.assertTrue(target.clicked)
+        self.assertIn({"resourceId": "com.whatsapp:id/entry"}, device.calls)
+        self.assertIn({"className": "android.widget.EditText"}, device.calls)
+
+    def test_focus_message_entry_raises_when_missing(self):
+        device = FakeUiDevice()
+
+        with patch("adb_automation.whatsapp.time.sleep"), self.assertRaisesRegex(
+            whatsapp.AutomationError,
+            "message compose field",
+        ):
+            whatsapp.focus_message_entry(
+                "192.168.10.21:5555",
+                WHATSAPP_MESSENGER_PACKAGE,
+                timeout=0,
+                device_connector=lambda serial: device,
+            )
+
+    def test_human_type_text_uses_input_text_backspace_and_preserves_final_text(self):
+        adb_commands = []
+
+        def fake_run_adb(command, serial=None):
+            adb_commands.append(command)
+            return ""
+
+        with patch(
+            "adb_automation.whatsapp.run_adb", side_effect=fake_run_adb
+        ), patch("adb_automation.whatsapp.time.sleep"):
+            whatsapp.human_type_text("192.168.10.21:5555", "hello there")
+
+        self.assertEqual(replay_adb_text_buffer(adb_commands), "hello there")
+        self.assertTrue(
+            any(command[:3] == ["shell", "input", "text"] for command in adb_commands)
+        )
+        self.assertTrue(
+            any(
+                command == ["shell", "input", "keyevent", "KEYCODE_DEL"]
+                for command in adb_commands
+            )
+        )
+
+    def test_send_whatsapp_types_message_before_clicking_send(self):
         with patch(
             "adb_automation.whatsapp.get_whatsapp_package",
             return_value=WHATSAPP_MESSENGER_PACKAGE,
         ), patch("adb_automation.whatsapp.run_adb") as run_adb, patch(
+            "adb_automation.whatsapp.focus_message_entry"
+        ) as focus_message_entry, patch(
             "adb_automation.whatsapp.click_send_button"
         ) as click_send_button, patch(
             "adb_automation.whatsapp.time.sleep"
@@ -158,7 +272,47 @@ class WhatsappSendButtonTests(unittest.TestCase):
             "builtins.print"
         ):
             whatsapp.send_whatsapp(
-                "192.168.10.21:5555", "5511999999999", text="hello"
+                "192.168.10.21:5555", "5511999999999", text="hello there"
+            )
+
+        focus_message_entry.assert_called_once_with(
+            "192.168.10.21:5555",
+            WHATSAPP_MESSENGER_PACKAGE,
+        )
+        click_send_button.assert_called_once_with(
+            "192.168.10.21:5555",
+            WHATSAPP_MESSENGER_PACKAGE,
+            fail_on_contact_picker=False,
+        )
+        adb_commands = [call.args[0] for call in run_adb.call_args_list]
+        self.assertEqual(
+            launched_view_urls(adb_commands),
+            ["https://wa.me/5511999999999"],
+        )
+        self.assertEqual(replay_adb_text_buffer(adb_commands), "hello there")
+        self.assertTrue(
+            any(
+                command == ["shell", "input", "keyevent", "KEYCODE_DEL"]
+                for command in adb_commands
+            )
+        )
+
+    def test_send_whatsapp_falls_back_to_prefilled_url_when_entry_is_missing(self):
+        with patch(
+            "adb_automation.whatsapp.get_whatsapp_package",
+            return_value=WHATSAPP_MESSENGER_PACKAGE,
+        ), patch("adb_automation.whatsapp.run_adb") as run_adb, patch(
+            "adb_automation.whatsapp.focus_message_entry",
+            side_effect=whatsapp.AutomationError("compose field missing"),
+        ), patch(
+            "adb_automation.whatsapp.click_send_button"
+        ) as click_send_button, patch(
+            "adb_automation.whatsapp.time.sleep"
+        ), patch(
+            "builtins.print"
+        ):
+            whatsapp.send_whatsapp(
+                "192.168.10.21:5555", "5511999999999", text="hello there"
             )
 
         click_send_button.assert_called_once_with(
@@ -167,8 +321,14 @@ class WhatsappSendButtonTests(unittest.TestCase):
             fail_on_contact_picker=False,
         )
         adb_commands = [call.args[0] for call in run_adb.call_args_list]
-        command_prefixes = [cmd[:3] for cmd in adb_commands]
-        self.assertNotIn(["shell", "input", "tap"], command_prefixes)
+        self.assertEqual(
+            launched_view_urls(adb_commands),
+            [
+                "https://wa.me/5511999999999",
+                "https://wa.me/5511999999999?text=hello%20there",
+            ],
+        )
+        self.assertEqual(replay_adb_text_buffer(adb_commands), "")
 
     def test_send_whatsapp_audio_uses_appium_media_sender(self):
         with tempfile.NamedTemporaryFile(suffix=".mp3") as media_file:
