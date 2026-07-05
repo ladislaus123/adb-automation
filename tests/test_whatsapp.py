@@ -48,12 +48,31 @@ def replay_adb_text_buffer(adb_commands):
 
 
 class FakeUiSelector:
-    def __init__(self, exists=False):
+    def __init__(self, exists=False, set_text_error=None, send_keys_error=None):
         self.exists = exists
         self.clicked = False
+        self.text_values = []
+        self.clear_calls = 0
+        self.sent_keys = []
+        self.set_text_error = set_text_error
+        self.send_keys_error = send_keys_error
 
     def click(self):
         self.clicked = True
+
+    def set_text(self, text):
+        if self.set_text_error is not None:
+            raise self.set_text_error
+        self.text_values.append(text)
+
+    def clear_text(self):
+        self.clear_calls += 1
+        self.text_values.append("")
+
+    def send_keys(self, text):
+        if self.send_keys_error is not None:
+            raise self.send_keys_error
+        self.sent_keys.append(text)
 
 
 class FakeUiDevice:
@@ -235,6 +254,18 @@ class WhatsappSendButtonTests(unittest.TestCase):
                 device_connector=lambda serial: device,
             )
 
+    def test_split_adb_safe_text_separates_unicode_spans(self):
+        self.assertEqual(
+            whatsapp.split_adb_safe_text("Ola você 🙂!"),
+            (
+                (whatsapp.TEXT_CHUNK_ADB, "Ola voc"),
+                (whatsapp.TEXT_CHUNK_UNICODE, "ê"),
+                (whatsapp.TEXT_CHUNK_ADB, " "),
+                (whatsapp.TEXT_CHUNK_UNICODE, "🙂"),
+                (whatsapp.TEXT_CHUNK_ADB, "!"),
+            ),
+        )
+
     def test_human_type_text_uses_input_text_backspace_and_preserves_final_text(self):
         adb_commands = []
 
@@ -257,6 +288,51 @@ class WhatsappSendButtonTests(unittest.TestCase):
                 for command in adb_commands
             )
         )
+
+    def test_human_type_text_inserts_unicode_without_adb_typing_unicode(self):
+        adb_commands = []
+        message_entry = FakeUiSelector(exists=True)
+        text = "Ola, você 🙂 ok"
+
+        def fake_run_adb(command, serial=None):
+            adb_commands.append(command)
+            return ""
+
+        with patch(
+            "adb_automation.whatsapp.run_adb", side_effect=fake_run_adb
+        ), patch("adb_automation.whatsapp.time.sleep"):
+            whatsapp.human_type_text(
+                "192.168.10.21:5555",
+                text,
+                message_entry=message_entry,
+            )
+
+        self.assertEqual(message_entry.text_values[-1], text)
+        self.assertIn("Ola, você", message_entry.text_values)
+        self.assertIn("Ola, você 🙂", message_entry.text_values)
+        text_commands = [
+            command
+            for command in adb_commands
+            if command[:3] == ["shell", "input", "text"]
+        ]
+        self.assertTrue(text_commands)
+        self.assertTrue(all(command[3].isascii() for command in text_commands))
+        self.assertFalse(
+            any("ê" in command[3] or "🙂" in command[3] for command in text_commands)
+        )
+        self.assertTrue(
+            any(
+                command == ["shell", "input", "keyevent", "KEYCODE_DEL"]
+                for command in adb_commands
+            )
+        )
+
+    def test_human_type_text_requires_compose_field_for_unicode(self):
+        with self.assertRaisesRegex(
+            whatsapp.AutomationError,
+            "Unicode text requires",
+        ):
+            whatsapp.human_type_text("192.168.10.21:5555", "Olá")
 
     def test_send_whatsapp_types_message_before_clicking_send(self):
         with patch(
@@ -329,6 +405,107 @@ class WhatsappSendButtonTests(unittest.TestCase):
             ],
         )
         self.assertEqual(replay_adb_text_buffer(adb_commands), "")
+
+    def test_send_whatsapp_falls_back_to_prefilled_url_when_typing_fails(self):
+        adb_commands = []
+
+        def fake_run_adb(command, serial=None):
+            adb_commands.append(command)
+            if command[:3] == ["shell", "input", "text"] and "sno" in command[3]:
+                raise whatsapp.AutomationError(
+                    "java.lang.NullPointerException: "
+                    "Attempt to get length of null array"
+                )
+            return ""
+
+        with patch(
+            "adb_automation.whatsapp.get_whatsapp_package",
+            return_value=WHATSAPP_MESSENGER_PACKAGE,
+        ), patch(
+            "adb_automation.whatsapp.run_adb", side_effect=fake_run_adb
+        ), patch(
+            "adb_automation.whatsapp.focus_message_entry"
+        ), patch(
+            "adb_automation.whatsapp.click_send_button"
+        ) as click_send_button, patch(
+            "adb_automation.whatsapp.time.sleep"
+        ), patch(
+            "builtins.print"
+        ):
+            whatsapp.send_whatsapp(
+                "192.168.10.21:5555", "5511999999999", text="hello snowman"
+            )
+
+        click_send_button.assert_called_once_with(
+            "192.168.10.21:5555",
+            WHATSAPP_MESSENGER_PACKAGE,
+            fail_on_contact_picker=False,
+        )
+        self.assertEqual(
+            launched_view_urls(adb_commands),
+            [
+                "https://wa.me/5511999999999",
+                "https://wa.me/5511999999999?text=hello%20snowman",
+            ],
+        )
+        self.assertTrue(
+            any(
+                command[:3] == ["shell", "input", "keyevent"]
+                and command.count("KEYCODE_DEL") >= len("hello snowman")
+                for command in adb_commands
+            )
+        )
+
+    def test_send_whatsapp_falls_back_to_prefilled_url_when_unicode_insert_fails(self):
+        adb_commands = []
+        message_entry = FakeUiSelector(
+            exists=True,
+            set_text_error=whatsapp.AutomationError("unicode insert failed"),
+            send_keys_error=whatsapp.AutomationError("unicode send_keys failed"),
+        )
+
+        def fake_run_adb(command, serial=None):
+            adb_commands.append(command)
+            return ""
+
+        with patch(
+            "adb_automation.whatsapp.get_whatsapp_package",
+            return_value=WHATSAPP_MESSENGER_PACKAGE,
+        ), patch(
+            "adb_automation.whatsapp.run_adb", side_effect=fake_run_adb
+        ), patch(
+            "adb_automation.whatsapp.focus_message_entry",
+            return_value=message_entry,
+        ), patch(
+            "adb_automation.whatsapp.click_send_button"
+        ) as click_send_button, patch(
+            "adb_automation.whatsapp.time.sleep"
+        ), patch(
+            "builtins.print"
+        ):
+            whatsapp.send_whatsapp(
+                "192.168.10.21:5555", "5511999999999", text="Olá 🙂"
+            )
+
+        click_send_button.assert_called_once_with(
+            "192.168.10.21:5555",
+            WHATSAPP_MESSENGER_PACKAGE,
+            fail_on_contact_picker=False,
+        )
+        self.assertEqual(
+            launched_view_urls(adb_commands),
+            [
+                "https://wa.me/5511999999999",
+                "https://wa.me/5511999999999?text=Ol%C3%A1%20%F0%9F%99%82",
+            ],
+        )
+        self.assertTrue(
+            any(
+                command[:3] == ["shell", "input", "keyevent"]
+                and command.count("KEYCODE_DEL") >= len("Olá 🙂")
+                for command in adb_commands
+            )
+        )
 
     def test_send_whatsapp_audio_uses_appium_media_sender(self):
         with tempfile.NamedTemporaryFile(suffix=".mp3") as media_file:

@@ -30,6 +30,8 @@ class DatabaseConnectionTests(unittest.TestCase):
             port=3306,
             user="root",
             password="secret",
+            auth_plugin="mysql_native_password",
+            use_pure=True,
             autocommit=True,
         )
         connect.assert_any_call(
@@ -38,6 +40,8 @@ class DatabaseConnectionTests(unittest.TestCase):
             user="root",
             password="secret",
             database="adb_automation",
+            auth_plugin="mysql_native_password",
+            use_pure=True,
             autocommit=False,
         )
         admin_cursor.execute.assert_called_once_with(

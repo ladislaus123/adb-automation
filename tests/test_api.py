@@ -102,7 +102,50 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(conn.send_jobs[0]["phone"], "256740932270")
         self.assertEqual(conn.send_jobs[0]["text"], "hello")
         self.assertEqual(conn.send_jobs[0]["business"], 1)
+        self.assertEqual(len(conn.send_jobs), 1)
         self.assertTrue(conn.closed)
+
+    def test_stochastic_job_is_enqueued_after_third_send_when_enabled(self):
+        conn = FakeMariaDBConnection()
+        devices.add_device(conn, "mdv", "192.168.10.21", 5555)
+
+        with patch.dict(
+            os.environ,
+            {
+                "ADB_AUTOMATION_API_KEY": self.api_key,
+                "STOCHASTIC_ENABLED": "true",
+            },
+        ), patch("adb_automation.api.open_database", return_value=conn), patch(
+            "adb_automation.api.init_database"
+        ), patch(
+            "builtins.print"
+        ):
+            responses = [
+                self.post_json(
+                    "/api/sendText",
+                    {
+                        "device": "mdv",
+                        "phone": f"25674093227{index}",
+                        "text": f"hello {index}",
+                    },
+                    headers=self.auth_headers(),
+                )
+                for index in range(3)
+            ]
+
+        self.assertTrue(all(response.status_code == 202 for response in responses))
+        self.assertEqual(
+            [job["endpoint"] for job in conn.send_jobs],
+            [
+                "/api/sendText",
+                "/api/sendText",
+                "/api/sendText",
+                send_queue.STOCHASTIC_ENDPOINT,
+            ],
+        )
+        self.assertEqual(conn.send_jobs[-1]["device_id"], conn.send_jobs[0]["device_id"])
+        self.assertEqual(conn.send_jobs[-1]["phone"], send_queue.STOCHASTIC_PHONE)
+        self.assertNotIn("stochastic_job_id", responses[-1].get_json())
 
     def test_image_and_video_routes_enqueue_file_path(self):
         conn = FakeMariaDBConnection()

@@ -27,6 +27,7 @@ API_PORT_ENV_VAR = "ADB_AUTOMATION_API_PORT"
 APPIUM_SERVER_ENV_VAR = "ADB_AUTOMATION_APPIUM_SERVER"
 QUEUE_WORKERS_ENV_VAR = "ADB_AUTOMATION_QUEUE_WORKERS"
 QUEUE_POLL_SECONDS_ENV_VAR = "ADB_AUTOMATION_QUEUE_POLL_SECONDS"
+STOCHASTIC_ENABLED_ENV_VAR = "STOCHASTIC_ENABLED"
 
 
 def load_env_file(path=".env"):
@@ -70,6 +71,19 @@ def env_int(name, default):
     if value is None:
         return default
     return parse_positive_int(value, name)
+
+
+def env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None or not str(value).strip():
+        return default
+
+    lowered = str(value).strip().lower()
+    if lowered in ("1", "true", "yes", "on"):
+        return True
+    if lowered in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"{name} must be a boolean.")
 
 
 load_env_file()

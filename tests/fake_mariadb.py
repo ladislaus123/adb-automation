@@ -58,6 +58,10 @@ class FakeCursor:
             self.result = self._find_job_by_id(params[0])
             return
 
+        if normalized.startswith("select count(*) as job_count from send_jobs"):
+            self.result = self._count_normal_jobs_by_device(params[0], params[1])
+            return
+
         if (
             normalized.startswith("select * from send_jobs where status = %s")
             and "order by id asc" in normalized
@@ -227,6 +231,14 @@ class FakeCursor:
         if limit is not None:
             jobs = jobs[:limit]
         return [copy.deepcopy(job) for job in jobs]
+
+    def _count_normal_jobs_by_device(self, device_id, stochastic_endpoint):
+        count = sum(
+            1
+            for job in self.conn.send_jobs
+            if job["device_id"] == device_id and job["endpoint"] != stochastic_endpoint
+        )
+        return {"job_count": count}
 
     def _find_by_name(self, name):
         for device in self.conn.devices:

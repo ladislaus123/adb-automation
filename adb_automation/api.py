@@ -10,7 +10,9 @@ from .config import (
     API_KEY_ENV_VAR,
     DEFAULT_LEASE_SECONDS,
     LEASE_ENV_VAR,
+    STOCHASTIC_ENABLED_ENV_VAR,
     env_int,
+    env_bool,
     parse_positive_int,
 )
 from .db import init_database, open_database
@@ -29,6 +31,7 @@ from .queue_worker import start_queue_workers
 from .send_queue import (
     JOB_STATUSES,
     enqueue_send_job,
+    enqueue_stochastic_job_if_due,
     get_send_job,
     list_send_jobs,
     parse_job_limit,
@@ -248,6 +251,19 @@ def register_send_route(app, endpoint, text_required=False, media_required=False
                 send_request["worker_id"],
                 send_request["lease_seconds"],
             )
+            if env_bool(STOCHASTIC_ENABLED_ENV_VAR):
+                stochastic_job = enqueue_stochastic_job_if_due(
+                    conn,
+                    device,
+                    send_request["device"],
+                    send_request["worker_id"],
+                    send_request["lease_seconds"],
+                )
+                if stochastic_job:
+                    print(
+                        "[*] Queued stochastic phone activity job "
+                        f"{stochastic_job['id']} after send job {job['id']}."
+                    )
             return jsonify(
                 {
                     "success": True,

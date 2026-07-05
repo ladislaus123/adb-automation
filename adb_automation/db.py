@@ -59,6 +59,7 @@ def open_database(database=None, host=None, port=None, user=None, password=None)
         user=settings["user"],
         password=settings["password"],
         auth_plugin="mysql_native_password",
+        use_pure=True,
         autocommit=True,
     )
     admin_cursor = admin_conn.cursor()
@@ -78,6 +79,7 @@ def open_database(database=None, host=None, port=None, user=None, password=None)
         password=settings["password"],
         database=settings["database"],
         auth_plugin="mysql_native_password",
+        use_pure=True,
         autocommit=False,
     )
     return conn

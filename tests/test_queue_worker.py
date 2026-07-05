@@ -41,6 +41,8 @@ class QueueWorkerTests(unittest.TestCase):
         with patch("builtins.print"), patch(
             "adb_automation.queue_worker.ensure_device_ready"
         ) as ensure_device_ready, patch(
+            "adb_automation.queue_worker.wake_and_unlock_device"
+        ) as wake_and_unlock_device, patch(
             "adb_automation.queue_worker.mark_device_seen"
         ) as mark_device_seen, patch(
             "adb_automation.queue_worker.send_whatsapp"
@@ -49,6 +51,7 @@ class QueueWorkerTests(unittest.TestCase):
 
         self.assertTrue(processed)
         ensure_device_ready.assert_called_once_with("192.168.10.21:5555")
+        wake_and_unlock_device.assert_called_once_with("192.168.10.21:5555")
         mark_device_seen.assert_called_once_with(self.conn, self.device["id"])
         send_whatsapp.assert_called_once_with(
             "192.168.10.21:5555",
@@ -75,6 +78,8 @@ class QueueWorkerTests(unittest.TestCase):
 
             with patch("builtins.print"), patch(
                 "adb_automation.queue_worker.ensure_device_ready"
+            ), patch(
+                "adb_automation.queue_worker.wake_and_unlock_device"
             ), patch("adb_automation.queue_worker.mark_device_seen"), patch(
                 "adb_automation.queue_worker.send_whatsapp"
             ) as send_whatsapp:
@@ -100,6 +105,8 @@ class QueueWorkerTests(unittest.TestCase):
 
         with patch("builtins.print"), patch(
             "adb_automation.queue_worker.ensure_device_ready"
+        ), patch(
+            "adb_automation.queue_worker.wake_and_unlock_device"
         ), patch("adb_automation.queue_worker.mark_device_seen"), patch(
             "adb_automation.queue_worker.send_whatsapp"
         ):
@@ -116,6 +123,8 @@ class QueueWorkerTests(unittest.TestCase):
         try:
             with patch("builtins.print"), patch(
                 "adb_automation.queue_worker.ensure_device_ready"
+            ), patch(
+                "adb_automation.queue_worker.wake_and_unlock_device"
             ), patch("adb_automation.queue_worker.mark_device_seen"), patch(
                 "adb_automation.queue_worker.send_whatsapp"
             ):
@@ -131,6 +140,8 @@ class QueueWorkerTests(unittest.TestCase):
 
         with patch("builtins.print"), patch(
             "adb_automation.queue_worker.ensure_device_ready"
+        ), patch(
+            "adb_automation.queue_worker.wake_and_unlock_device"
         ), patch("adb_automation.queue_worker.mark_device_seen"), patch(
             "adb_automation.queue_worker.send_whatsapp",
             side_effect=AutomationError("adb failed"),
@@ -149,6 +160,42 @@ class QueueWorkerTests(unittest.TestCase):
         processed = queue_worker.run_queue_once(self.conn, "queue-worker-1")
 
         self.assertFalse(processed)
+
+    def test_worker_runs_stochastic_job_and_releases_device(self):
+        job = send_queue.enqueue_stochastic_job(
+            self.conn,
+            self.device,
+            "phone-01",
+            "api-worker",
+            600,
+        )
+
+        with patch("builtins.print"), patch(
+            "adb_automation.queue_worker.ensure_device_ready"
+        ) as ensure_device_ready, patch(
+            "adb_automation.queue_worker.wake_and_unlock_device"
+        ) as wake_and_unlock_device, patch(
+            "adb_automation.queue_worker.mark_device_seen"
+        ) as mark_device_seen, patch(
+            "adb_automation.queue_worker.run_stochastic_actions"
+        ) as run_stochastic_actions, patch(
+            "adb_automation.queue_worker.send_whatsapp"
+        ) as send_whatsapp:
+            processed = queue_worker.run_queue_once(self.conn, "queue-worker-1")
+
+        self.assertTrue(processed)
+        ensure_device_ready.assert_called_once_with("192.168.10.21:5555")
+        wake_and_unlock_device.assert_called_once_with("192.168.10.21:5555")
+        mark_device_seen.assert_called_once_with(self.conn, self.device["id"])
+        run_stochastic_actions.assert_called_once_with("192.168.10.21:5555")
+        send_whatsapp.assert_not_called()
+        self.assertEqual(
+            send_queue.get_send_job(self.conn, job["id"])["status"],
+            send_queue.JOB_STATUS_SUCCEEDED,
+        )
+        released = devices.find_device(self.conn, "phone-01")
+        self.assertIsNone(released["worker_id"])
+        self.assertIsNone(released["locked_until"])
 
     def test_configured_worker_count_caps_to_cpu_count(self):
         with patch("adb_automation.queue_worker.os.cpu_count", return_value=4), patch.dict(

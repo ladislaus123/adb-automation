@@ -24,8 +24,11 @@ CONTACT_PICKER_TEXTS = (
 HUMAN_TYPE_BURST_SIZES = (3, 4, 2, 5, 3, 6)
 HUMAN_TYPE_PAUSE_SECONDS = 0.35
 HUMAN_CORRECTION_PAUSE_SECONDS = 0.5
+HUMAN_UNICODE_SET_PAUSE_SECONDS = 0.2
 HUMAN_CORRECTION_FRAGMENTS = ("teh", "kk", "..", "hm")
 ADB_INPUT_SHELL_SPECIALS = set("'\"`$&|;<>()*?!#[]{}~\\")
+TEXT_CHUNK_ADB = "adb"
+TEXT_CHUNK_UNICODE = "unicode"
 
 
 def normalize_phone(phone):
@@ -167,7 +170,7 @@ def focus_message_entry(
                 if selector_exists(selector):
                     selector.click()
                     time.sleep(0.4)
-                    return
+                    return selector
             except Exception as exc:
                 last_error = exc
 
@@ -332,9 +335,43 @@ def escape_adb_input_text(text):
     return "".join(escaped)
 
 
+def is_adb_safe_input_char(char):
+    codepoint = ord(char)
+    return char == " " or 0x21 <= codepoint <= 0x7E
+
+
+def is_adb_safe_input_text(text):
+    return all(is_adb_safe_input_char(char) for char in text)
+
+
+def split_adb_safe_text(text):
+    chunks = []
+    current_kind = None
+    current_text = []
+
+    for char in text:
+        kind = (
+            TEXT_CHUNK_ADB
+            if is_adb_safe_input_char(char)
+            else TEXT_CHUNK_UNICODE
+        )
+        if kind != current_kind and current_text:
+            chunks.append((current_kind, "".join(current_text)))
+            current_text = []
+        current_kind = kind
+        current_text.append(char)
+
+    if current_text:
+        chunks.append((current_kind, "".join(current_text)))
+
+    return tuple(chunks)
+
+
 def type_text_chunk(serial, text):
     if not text:
         return
+    if not is_adb_safe_input_text(text):
+        raise AutomationError("ADB input text cannot type Unicode safely.")
     run_adb(["shell", "input", "text", escape_adb_input_text(text)], serial=serial)
 
 
@@ -342,6 +379,22 @@ def press_backspace(serial, count=1):
     for _ in range(count):
         run_adb(["shell", "input", "keyevent", "KEYCODE_DEL"], serial=serial)
         time.sleep(0.08)
+
+
+def clear_message_draft(serial, text):
+    delete_count = max(20, len(text) + 12)
+    command = ["shell", "input", "keyevent"]
+    command.extend(["KEYCODE_DEL"] * delete_count)
+
+    try:
+        run_adb(command, serial=serial)
+        time.sleep(0.2)
+    except AutomationError as exc:
+        print(f"[WARN] Batched draft clear failed; retrying slowly: {exc}")
+        try:
+            press_backspace(serial, delete_count)
+        except AutomationError as retry_exc:
+            print(f"[WARN] Could not fully clear partial draft: {retry_exc}")
 
 
 def correction_positions(text):
@@ -380,8 +433,68 @@ def inject_visible_correction(serial, correction_index):
     time.sleep(HUMAN_CORRECTION_PAUSE_SECONDS)
 
 
-def human_type_text(serial, text):
+def set_message_entry_text(message_entry, text):
+    errors = []
+    set_text = getattr(message_entry, "set_text", None)
+    if callable(set_text):
+        try:
+            set_text(text)
+            time.sleep(HUMAN_UNICODE_SET_PAUSE_SECONDS)
+            return
+        except Exception as exc:
+            errors.append(f"set_text: {exc}")
+
+    send_keys = getattr(message_entry, "send_keys", None)
+    if callable(send_keys):
+        for clear_method_name in ("clear_text", "clear"):
+            clear_text = getattr(message_entry, clear_method_name, None)
+            if not callable(clear_text):
+                continue
+            try:
+                clear_text()
+                send_keys(text)
+                time.sleep(HUMAN_UNICODE_SET_PAUSE_SECONDS)
+                return
+            except Exception as exc:
+                errors.append(f"{clear_method_name}+send_keys: {exc}")
+
+    details = f" Details: {'; '.join(errors)}" if errors else ""
+    raise AutomationError(
+        "Could not insert Unicode text into WhatsApp compose field." + details
+    )
+
+
+def human_type_unicode_text(serial, text, message_entry):
+    if message_entry is None:
+        raise AutomationError(
+            "Unicode text requires an active WhatsApp compose field."
+        )
+
+    accumulated = ""
+    correction_index = 0
+    correction_count = len(correction_positions(text))
+
+    for kind, chunk in split_adb_safe_text(text):
+        if kind == TEXT_CHUNK_ADB:
+            if correction_index < correction_count:
+                inject_visible_correction(serial, correction_index)
+                correction_index += 1
+            type_visible_text(serial, chunk)
+            accumulated += chunk
+            continue
+
+        accumulated += chunk
+        set_message_entry_text(message_entry, accumulated)
+
+    set_message_entry_text(message_entry, text)
+
+
+def human_type_text(serial, text, message_entry=None):
     if not text:
+        return
+
+    if not is_adb_safe_input_text(text):
+        human_type_unicode_text(serial, text, message_entry)
         return
 
     cursor = 0
@@ -451,7 +564,7 @@ def send_whatsapp(serial, phone, text=None, file_path=None, business=False):
     if not file_path:
         print("[*] Focusing WhatsApp message field...")
         try:
-            focus_message_entry(serial, whatsapp_package)
+            message_entry = focus_message_entry(serial, whatsapp_package)
         except AutomationError as exc:
             print(f"[WARN] {exc}")
             launch_whatsapp_prefilled_text(serial, phone, text, whatsapp_package)
@@ -459,7 +572,14 @@ def send_whatsapp(serial, phone, text=None, file_path=None, business=False):
             time.sleep(3.5)
         else:
             print("[*] Typing message with human-like pacing...")
-            human_type_text(serial, text)
+            try:
+                human_type_text(serial, text, message_entry=message_entry)
+            except AutomationError as exc:
+                print(f"[WARN] Human-like typing failed; falling back: {exc}")
+                clear_message_draft(serial, text)
+                launch_whatsapp_prefilled_text(serial, phone, text, whatsapp_package)
+                print("[*] Waiting for WhatsApp prefilled text UI to settle...")
+                time.sleep(3.5)
 
     print("[*] Finding WhatsApp send button with uiautomator2...")
     click_send_button(

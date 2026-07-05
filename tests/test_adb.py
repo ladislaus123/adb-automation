@@ -16,7 +16,7 @@ class AdbCommandTests(unittest.TestCase):
         self.assertEqual(output, "ok")
         self.assertEqual(
             run.call_args.args[0],
-            ["adb", "-s", "192.168.10.21:5555", "shell", "id"],
+            [adb._ADB, "-s", "192.168.10.21:5555", "shell", "id"],
         )
 
     def test_run_adb_does_not_target_global_commands(self):
@@ -27,7 +27,7 @@ class AdbCommandTests(unittest.TestCase):
             output = adb.run_adb(["devices"])
 
         self.assertEqual(output, "ok")
-        self.assertEqual(run.call_args.args[0], ["adb", "devices"])
+        self.assertEqual(run.call_args.args[0], [adb._ADB, "devices"])
 
     def test_connect_wifi_device_runs_adb_connect(self):
         with patch(
@@ -48,6 +48,80 @@ class AdbCommandTests(unittest.TestCase):
         self.assertEqual(output, "Successfully paired")
         run_adb.assert_called_once_with(
             ["pair", "192.168.10.21:37123", "123456"]
+        )
+
+    def test_wake_and_unlock_wakes_off_screen_and_swipes(self):
+        commands = []
+
+        def fake_run_adb(command, serial=None):
+            commands.append((command, serial))
+            if command == ["shell", "dumpsys", "power"]:
+                return "mWakefulness=Asleep\nmInteractive=false\n"
+            if command == ["shell", "dumpsys", "window"]:
+                return "mShowingLockscreen=true\n"
+            if command == ["shell", "wm", "size"]:
+                return "Physical size: 1080x2400\n"
+            return ""
+
+        sleeps = []
+        with patch("builtins.print"):
+            adb.wake_and_unlock_device(
+                "192.168.10.21:5555",
+                run_adb_command=fake_run_adb,
+                sleep=sleeps.append,
+            )
+
+        self.assertEqual(
+            commands,
+            [
+                (["shell", "dumpsys", "power"], "192.168.10.21:5555"),
+                (
+                    ["shell", "input", "keyevent", "KEYCODE_WAKEUP"],
+                    "192.168.10.21:5555",
+                ),
+                (["shell", "dumpsys", "window"], "192.168.10.21:5555"),
+                (["shell", "wm", "size"], "192.168.10.21:5555"),
+                (
+                    [
+                        "shell",
+                        "input",
+                        "swipe",
+                        "540",
+                        "2040",
+                        "540",
+                        "600",
+                        "300",
+                    ],
+                    "192.168.10.21:5555",
+                ),
+            ],
+        )
+        self.assertEqual(sleeps, [adb.WAKE_SETTLE_SECONDS, adb.UNLOCK_SETTLE_SECONDS])
+
+    def test_wake_and_unlock_does_not_touch_awake_unlocked_screen(self):
+        commands = []
+
+        def fake_run_adb(command, serial=None):
+            commands.append((command, serial))
+            if command == ["shell", "dumpsys", "power"]:
+                return "mWakefulness=Awake\nmInteractive=true\n"
+            if command == ["shell", "dumpsys", "window"]:
+                return "mShowingLockscreen=false\n"
+            return ""
+
+        with patch("builtins.print"):
+            adb.wake_and_unlock_device(
+                "192.168.10.21:5555",
+                run_adb_command=fake_run_adb,
+                sleep=lambda seconds: None,
+            )
+
+        self.assertEqual(
+            commands,
+            [
+                (["shell", "dumpsys", "power"], "192.168.10.21:5555"),
+                (["shell", "dumpsys", "window"], "192.168.10.21:5555"),
+            ],
         )
 
 

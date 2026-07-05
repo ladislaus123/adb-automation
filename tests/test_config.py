@@ -38,6 +38,18 @@ class EnvFileTests(unittest.TestCase):
 
                 self.assertEqual(os.environ["ADB_AUTOMATION_DB_PASSWORD"], "from-env")
 
+    def test_env_bool_parses_truthy_and_falsey_values(self):
+        with patch.dict(os.environ, {"STOCHASTIC_ENABLED": "true"}):
+            self.assertTrue(config.env_bool("STOCHASTIC_ENABLED"))
+
+        with patch.dict(os.environ, {"STOCHASTIC_ENABLED": "off"}):
+            self.assertFalse(config.env_bool("STOCHASTIC_ENABLED", default=True))
+
+    def test_env_bool_rejects_invalid_values(self):
+        with patch.dict(os.environ, {"STOCHASTIC_ENABLED": "maybe"}):
+            with self.assertRaisesRegex(ValueError, "must be a boolean"):
+                config.env_bool("STOCHASTIC_ENABLED")
+
 
 if __name__ == "__main__":
     unittest.main()

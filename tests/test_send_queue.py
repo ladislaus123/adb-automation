@@ -119,6 +119,49 @@ class SendQueueTests(unittest.TestCase):
         self.assertEqual(failed["error"], "boom")
         self.assertIsNotNone(claimed_second)
 
+    def test_stochastic_job_is_enqueued_after_third_normal_send_for_device(self):
+        self.enqueue()
+        self.assertIsNone(
+            send_queue.enqueue_stochastic_job_if_due(
+                self.conn,
+                self.device,
+                "phone-01",
+                "api-worker",
+                600,
+            )
+        )
+        self.enqueue()
+        self.assertIsNone(
+            send_queue.enqueue_stochastic_job_if_due(
+                self.conn,
+                self.device,
+                "phone-01",
+                "api-worker",
+                600,
+            )
+        )
+        self.enqueue()
+
+        stochastic_job = send_queue.enqueue_stochastic_job_if_due(
+            self.conn,
+            self.device,
+            "phone-01",
+            "api-worker",
+            600,
+        )
+
+        self.assertIsNotNone(stochastic_job)
+        self.assertTrue(send_queue.is_stochastic_job(stochastic_job))
+        self.assertEqual(stochastic_job["endpoint"], send_queue.STOCHASTIC_ENDPOINT)
+        self.assertEqual(stochastic_job["phone"], send_queue.STOCHASTIC_PHONE)
+        self.assertEqual(
+            send_queue.count_normal_send_jobs_for_device(
+                self.conn,
+                self.device["id"],
+            ),
+            3,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,6 +26,9 @@ JOB_STATUSES = (
 
 DEFAULT_JOB_LIST_LIMIT = 50
 MAX_JOB_LIST_LIMIT = 500
+STOCHASTIC_ENDPOINT = "/internal/stochastic"
+STOCHASTIC_INTERVAL = 3
+STOCHASTIC_PHONE = ""
 
 
 def enqueue_send_job(
@@ -67,6 +70,62 @@ def enqueue_send_job(
     )
     conn.commit()
     return get_send_job(conn, job_id)
+
+
+def is_stochastic_endpoint(endpoint):
+    return endpoint == STOCHASTIC_ENDPOINT
+
+
+def is_stochastic_job(job):
+    return is_stochastic_endpoint(job.get("endpoint"))
+
+
+def count_normal_send_jobs_for_device(conn, device_id):
+    row = fetch_one(
+        conn,
+        """
+        SELECT COUNT(*) AS job_count
+        FROM send_jobs
+        WHERE device_id = %s AND endpoint <> %s
+        """,
+        (device_id, STOCHASTIC_ENDPOINT),
+    )
+    return int(row["job_count"] or 0)
+
+
+def enqueue_stochastic_job(conn, device, device_selector, worker_id, lease_seconds):
+    return enqueue_send_job(
+        conn,
+        STOCHASTIC_ENDPOINT,
+        device,
+        device_selector,
+        STOCHASTIC_PHONE,
+        None,
+        None,
+        False,
+        worker_id,
+        lease_seconds,
+    )
+
+
+def enqueue_stochastic_job_if_due(
+    conn,
+    device,
+    device_selector,
+    worker_id,
+    lease_seconds,
+    interval=STOCHASTIC_INTERVAL,
+):
+    normal_job_count = count_normal_send_jobs_for_device(conn, device["id"])
+    if normal_job_count <= 0 or normal_job_count % interval != 0:
+        return None
+    return enqueue_stochastic_job(
+        conn,
+        device,
+        device_selector,
+        worker_id,
+        lease_seconds,
+    )
 
 
 def get_send_job(conn, job_id):

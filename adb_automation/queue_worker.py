@@ -5,7 +5,7 @@ import time
 
 import mysql.connector
 
-from .adb import ensure_device_ready
+from .adb import ensure_device_ready, wake_and_unlock_device
 from .config import (
     DEFAULT_QUEUE_POLL_SECONDS,
     QUEUE_POLL_SECONDS_ENV_VAR,
@@ -25,7 +25,9 @@ from .send_queue import (
     claim_next_send_job,
     complete_send_job,
     fail_send_job,
+    is_stochastic_job,
 )
+from .stochastic import run_stochastic_actions
 from .whatsapp import send_whatsapp
 
 _queue_workers_started = False
@@ -121,14 +123,18 @@ def process_claimed_job(conn, job):
 
     try:
         ensure_device_ready(serial)
+        wake_and_unlock_device(serial)
         mark_device_seen(conn, device["id"])
-        send_whatsapp(
-            serial,
-            job["phone"],
-            text=job["text"],
-            file_path=file_path,
-            business=bool(job["business"]),
-        )
+        if is_stochastic_job(job):
+            run_stochastic_actions(serial)
+        else:
+            send_whatsapp(
+                serial,
+                job["phone"],
+                text=job["text"],
+                file_path=file_path,
+                business=bool(job["business"]),
+            )
         complete_send_job(conn, job["id"])
         print(f"[+] Queue job {job['id']} completed.")
     except Exception as exc:

@@ -18,6 +18,8 @@ class WorkflowTests(unittest.TestCase):
 
         with patch("builtins.print"), patch(
             "adb_automation.workflows.ensure_device_ready"
+        ), patch(
+            "adb_automation.workflows.wake_and_unlock_device"
         ), patch("adb_automation.workflows.mark_device_seen"), patch(
             "adb_automation.workflows.send_whatsapp",
             side_effect=AutomationError("boom"),
@@ -54,7 +56,11 @@ class WorkflowTests(unittest.TestCase):
 
         with patch("builtins.print"), patch(
             "adb_automation.workflows.ensure_device_ready"
-        ), patch("adb_automation.workflows.mark_device_seen"), patch(
+        ) as ensure_device_ready, patch(
+            "adb_automation.workflows.wake_and_unlock_device"
+        ) as wake_and_unlock_device, patch(
+            "adb_automation.workflows.mark_device_seen"
+        ), patch(
             "adb_automation.workflows.send_whatsapp"
         ) as send_whatsapp:
             workflows.send_with_device_lease(
@@ -68,6 +74,8 @@ class WorkflowTests(unittest.TestCase):
                 business=True,
             )
 
+        ensure_device_ready.assert_called_once_with("192.168.10.21:5555")
+        wake_and_unlock_device.assert_called_once_with("192.168.10.21:5555")
         send_whatsapp.assert_called_once_with(
             "192.168.10.21:5555",
             "5511999999999",
@@ -89,6 +97,8 @@ class WorkflowTests(unittest.TestCase):
             "adb_automation.workflows.acquire_device_lease",
             return_value=leased_device,
         ), patch("adb_automation.workflows.ensure_device_ready"), patch(
+            "adb_automation.workflows.wake_and_unlock_device"
+        ), patch(
             "adb_automation.workflows.mark_device_seen"
         ), patch("adb_automation.workflows.send_whatsapp"), patch(
             "adb_automation.workflows.release_device_lease"

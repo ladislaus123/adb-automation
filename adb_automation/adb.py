@@ -1,9 +1,38 @@
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 
 from .errors import AdbError
+
+SCREEN_OFF_PATTERNS = (
+    re.compile(r"\bmWakefulness=Asleep\b"),
+    re.compile(r"\bmInteractive=false\b"),
+    re.compile(r"\bDisplay Power:\s*state=OFF\b"),
+)
+SCREEN_ON_PATTERNS = (
+    re.compile(r"\bmWakefulness=Awake\b"),
+    re.compile(r"\bmInteractive=true\b"),
+    re.compile(r"\bDisplay Power:\s*state=ON\b"),
+)
+KEYGUARD_SHOWING_PATTERNS = (
+    re.compile(r"\bmShowingLockscreen=true\b"),
+    re.compile(r"\bmDreamingLockscreen=true\b"),
+    re.compile(r"\bisStatusBarKeyguard=true\b"),
+    re.compile(r"\bmKeyguardShowing=true\b"),
+)
+KEYGUARD_HIDDEN_PATTERNS = (
+    re.compile(r"\bmShowingLockscreen=false\b"),
+    re.compile(r"\bmDreamingLockscreen=false\b"),
+    re.compile(r"\bisStatusBarKeyguard=false\b"),
+    re.compile(r"\bmKeyguardShowing=false\b"),
+)
+WM_SIZE_PATTERN = re.compile(r"Physical size:\s*(\d+)x(\d+)")
+DEFAULT_SCREEN_SIZE = (1080, 1920)
+WAKE_SETTLE_SECONDS = 0.5
+UNLOCK_SETTLE_SECONDS = 0.5
 
 
 def _find_adb():
@@ -78,6 +107,107 @@ def pair_wifi_device(ip, port, pairing_code):
     if output:
         print(f"[*] adb pair: {output}")
     return output
+
+
+def _matches_any(output, patterns):
+    output = output or ""
+    return any(pattern.search(output) for pattern in patterns)
+
+
+def parse_screen_awake(output):
+    if _matches_any(output, SCREEN_OFF_PATTERNS):
+        return False
+    if _matches_any(output, SCREEN_ON_PATTERNS):
+        return True
+    return None
+
+
+def parse_keyguard_showing(output):
+    if _matches_any(output, KEYGUARD_SHOWING_PATTERNS):
+        return True
+    if _matches_any(output, KEYGUARD_HIDDEN_PATTERNS):
+        return False
+    return None
+
+
+def parse_screen_size(output):
+    match = WM_SIZE_PATTERN.search(output or "")
+    if not match:
+        return DEFAULT_SCREEN_SIZE
+    return int(match.group(1)), int(match.group(2))
+
+
+def screen_is_awake(serial, run_adb_command=run_adb):
+    try:
+        output = run_adb_command(["shell", "dumpsys", "power"], serial=serial)
+    except AdbError as exc:
+        print(f"[WARN] Could not read screen power state: {exc}")
+        return None
+    return parse_screen_awake(output)
+
+
+def keyguard_is_showing(serial, run_adb_command=run_adb):
+    try:
+        output = run_adb_command(["shell", "dumpsys", "window"], serial=serial)
+    except AdbError as exc:
+        print(f"[WARN] Could not read keyguard state: {exc}")
+        return None
+    return parse_keyguard_showing(output)
+
+
+def device_screen_size(serial, run_adb_command=run_adb):
+    try:
+        output = run_adb_command(["shell", "wm", "size"], serial=serial)
+    except AdbError as exc:
+        print(f"[WARN] Could not read screen size; using default unlock swipe: {exc}")
+        return DEFAULT_SCREEN_SIZE
+    return parse_screen_size(output)
+
+
+def swipe_to_unlock(serial, run_adb_command=run_adb):
+    width, height = device_screen_size(serial, run_adb_command=run_adb_command)
+    x = width // 2
+    start_y = int(height * 0.85)
+    end_y = int(height * 0.25)
+    run_adb_command(
+        [
+            "shell",
+            "input",
+            "swipe",
+            str(x),
+            str(start_y),
+            str(x),
+            str(end_y),
+            "300",
+        ],
+        serial=serial,
+    )
+
+
+def wake_and_unlock_device(serial, run_adb_command=run_adb, sleep=time.sleep):
+    awake = screen_is_awake(serial, run_adb_command=run_adb_command)
+    woke_screen = awake is False
+
+    if woke_screen:
+        print(f"[*] Phone screen is off on {serial}; waking it.")
+        run_adb_command(
+            ["shell", "input", "keyevent", "KEYCODE_WAKEUP"],
+            serial=serial,
+        )
+        sleep(WAKE_SETTLE_SECONDS)
+    elif awake is None:
+        print(f"[*] Could not determine screen state on {serial}; sending wakeup.")
+        run_adb_command(
+            ["shell", "input", "keyevent", "KEYCODE_WAKEUP"],
+            serial=serial,
+        )
+        sleep(WAKE_SETTLE_SECONDS)
+
+    keyguard_showing = keyguard_is_showing(serial, run_adb_command=run_adb_command)
+    if woke_screen or keyguard_showing is True:
+        print(f"[*] Unlocking {serial}.")
+        swipe_to_unlock(serial, run_adb_command=run_adb_command)
+        sleep(UNLOCK_SETTLE_SECONDS)
 
 
 def ensure_device_ready(serial):

@@ -1,6 +1,6 @@
 import os
 
-from .adb import ensure_device_ready
+from .adb import ensure_device_ready, wake_and_unlock_device
 from .devices import (
     acquire_device_lease,
     device_serial,
@@ -27,6 +27,7 @@ def send_with_device_lease(
 
     try:
         ensure_device_ready(serial)
+        wake_and_unlock_device(serial)
         mark_device_seen(conn, device["id"])
         send_whatsapp(serial, phone, text=text, file_path=file_path, business=business)
     finally:
