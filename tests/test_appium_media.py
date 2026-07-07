@@ -237,6 +237,8 @@ class AppiumMediaUiTests(unittest.TestCase):
             cleanup_commands.append((command, serial))
             return ""
 
+        fake_sleep = Mock()
+
         with patch(
             "adb_automation.appium_media.stage_latest_media",
             return_value=remote_path,
@@ -253,6 +255,7 @@ class AppiumMediaUiTests(unittest.TestCase):
                 appium_server="http://appium.local:4723",
                 run_adb_command=fake_run_adb,
                 driver_factory=driver_factory,
+                sleep=fake_sleep,
             )
 
         self.assertEqual(
@@ -265,23 +268,36 @@ class AppiumMediaUiTests(unittest.TestCase):
             caption="caption",
             mime_type="image/jpeg",
         )
-        self.assertEqual(
+        self.assertIn(
+            (
+                [
+                    "shell",
+                    "am",
+                    "force-stop",
+                    "io.appium.uiautomator2.server",
+                ],
+                serial,
+            ),
             cleanup_commands,
-            [
-                (["shell", "rm", "-f", remote_path], serial),
-                (
-                    [
-                        "shell",
-                        "am",
-                        "broadcast",
-                        "-a",
-                        "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-                        "-d",
-                        f"file://{remote_path}",
-                    ],
-                    serial,
-                ),
-            ],
+        )
+        self.assertIn(
+            (["shell", "rm", "-f", remote_path], serial),
+            cleanup_commands,
+        )
+        self.assertIn(
+            (
+                [
+                    "shell",
+                    "am",
+                    "broadcast",
+                    "-a",
+                    "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                    "-d",
+                    f"file://{remote_path}",
+                ],
+                serial,
+            ),
+            cleanup_commands,
         )
         self.assertTrue(driver.quit_called)
 

@@ -277,7 +277,12 @@ def is_recoverable_appium_start_error(exc):
     return any(marker in message for marker in APPIUM_RECOVERABLE_START_MARKERS)
 
 
-def reset_appium_helpers(serial, run_adb_command=run_adb, sleep=time.sleep):
+def reset_appium_helpers(
+    serial,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    wait=True,
+):
     print("[*] Resetting Appium UiAutomator2 helper packages...")
     for package in APPIUM_HELPER_PACKAGES:
         run_best_effort_adb(
@@ -285,7 +290,8 @@ def reset_appium_helpers(serial, run_adb_command=run_adb, sleep=time.sleep):
             serial,
             run_adb_command=run_adb_command,
         )
-    sleep(APPIUM_RECOVERY_WAIT_SECONDS)
+    if wait:
+        sleep(APPIUM_RECOVERY_WAIT_SECONDS)
 
 
 def start_appium_driver_with_recovery(
@@ -699,6 +705,12 @@ def send_media_with_appium(
                 driver.quit()
             except Exception as exc:
                 print(f"[WARN] Could not quit Appium driver cleanly: {exc}")
+            reset_appium_helpers(
+                serial,
+                run_adb_command=run_adb_command,
+                sleep=sleep,
+                wait=False,
+            )
     finally:
         cleanup_staged_media(
             serial,
