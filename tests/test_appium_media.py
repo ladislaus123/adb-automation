@@ -1,7 +1,8 @@
 import tempfile
+import types
 import unittest
 from datetime import datetime
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from adb_automation import appium_media
 from adb_automation.config import WHATSAPP_BUSINESS_PACKAGE
@@ -49,6 +50,58 @@ class FakeDriver:
 
 
 class AppiumMediaUiTests(unittest.TestCase):
+    def test_start_appium_driver_sets_deterministic_system_port(self):
+        captured = {}
+        serial = "192.168.10.21:5555"
+
+        class FakeOptions:
+            def __init__(self):
+                self.capabilities = {}
+
+            def set_capability(self, key, value):
+                self.capabilities[key] = value
+
+        def fake_remote(server_url, options=None):
+            captured["server_url"] = server_url
+            captured["options"] = options
+            return "driver"
+
+        appium_module = types.ModuleType("appium")
+        webdriver_module = types.ModuleType("appium.webdriver")
+        webdriver_module.Remote = fake_remote
+        appium_module.webdriver = webdriver_module
+        options_module = types.ModuleType("appium.options")
+        android_options_module = types.ModuleType("appium.options.android")
+        android_options_module.UiAutomator2Options = FakeOptions
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "appium": appium_module,
+                "appium.webdriver": webdriver_module,
+                "appium.options": options_module,
+                "appium.options.android": android_options_module,
+            },
+        ):
+            driver = appium_media.start_appium_driver(
+                serial,
+                "http://appium.local:4723",
+            )
+
+        self.assertEqual(driver, "driver")
+        self.assertEqual(captured["server_url"], "http://appium.local:4723")
+        system_port = captured["options"].capabilities["systemPort"]
+        self.assertEqual(
+            system_port,
+            appium_media.appium_system_port_for_serial(serial),
+        )
+        self.assertGreaterEqual(system_port, appium_media.APPIUM_SYSTEM_PORT_BASE)
+        self.assertLess(
+            system_port,
+            appium_media.APPIUM_SYSTEM_PORT_BASE
+            + appium_media.APPIUM_SYSTEM_PORT_SPAN,
+        )
+
     def test_send_latest_visible_media_clicks_attach_media_caption_and_send(self):
         attach = FakeElement()
         media = FakeElement()
@@ -226,15 +279,24 @@ class AppiumMediaUiTests(unittest.TestCase):
         driver = FakeDriver()
         factory_calls = []
         cleanup_commands = []
+        events = []
         serial = "192.168.10.21:5555"
         remote_path = "/sdcard/DCIM/Camera/IMG_20260616_193045.jpg"
 
+        def quit_driver():
+            events.append(("quit",))
+            driver.quit_called = True
+
+        driver.quit = quit_driver
+
         def driver_factory(serial, server_url):
             factory_calls.append((serial, server_url))
+            events.append(("factory", serial, server_url))
             return driver
 
         def fake_run_adb(command, serial=None):
             cleanup_commands.append((command, serial))
+            events.append(("adb", command, serial))
             return ""
 
         fake_sleep = Mock()
@@ -262,6 +324,17 @@ class AppiumMediaUiTests(unittest.TestCase):
             factory_calls,
             [(serial, "http://appium.local:4723")],
         )
+        forward_event = ("adb", ["forward", "--remove-all"], serial)
+        forward_indexes = [
+            index for index, event in enumerate(events) if event == forward_event
+        ]
+        self.assertEqual(len(forward_indexes), 2)
+        self.assertLess(
+            forward_indexes[0],
+            events.index(("factory", serial, "http://appium.local:4723")),
+        )
+        self.assertLess(events.index(("quit",)), forward_indexes[1])
+        self.assertIn((["forward", "--remove-all"], serial), cleanup_commands)
         send_latest_visible_media.assert_called_once_with(
             driver,
             WHATSAPP_BUSINESS_PACKAGE,
@@ -275,6 +348,18 @@ class AppiumMediaUiTests(unittest.TestCase):
                     "am",
                     "force-stop",
                     "io.appium.uiautomator2.server",
+                ],
+                serial,
+            ),
+            cleanup_commands,
+        )
+        self.assertIn(
+            (
+                [
+                    "shell",
+                    "am",
+                    "force-stop",
+                    "io.appium.settings",
                 ],
                 serial,
             ),
@@ -300,22 +385,32 @@ class AppiumMediaUiTests(unittest.TestCase):
             cleanup_commands,
         )
         self.assertTrue(driver.quit_called)
+        self.assertEqual(
+            fake_sleep.call_args_list,
+            [
+                call(appium_media.APPIUM_PRE_SESSION_WAIT_SECONDS),
+                call(appium_media.APPIUM_POST_QUIT_WAIT_SECONDS),
+            ],
+        )
 
     def test_send_media_with_appium_resets_helpers_and_retries_driver(self):
         driver = FakeDriver()
         factory_calls = []
         commands = []
+        events = []
         serial = "192.168.10.21:5555"
         remote_path = "/sdcard/DCIM/Camera/IMG_20260616_193045.jpg"
 
         def driver_factory(serial, server_url):
             factory_calls.append((serial, server_url))
+            events.append(("factory", len(factory_calls), serial, server_url))
             if len(factory_calls) == 1:
                 raise AutomationError("UiAutomation not connected")
             return driver
 
         def fake_run_adb(command, serial=None):
             commands.append((command, serial))
+            events.append(("adb", command, serial))
             return ""
 
         fake_sleep = Mock()
@@ -346,6 +441,23 @@ class AppiumMediaUiTests(unittest.TestCase):
                 (serial, "http://appium.local:4723"),
             ],
         )
+        forward_event = ("adb", ["forward", "--remove-all"], serial)
+        forward_indexes = [
+            index for index, event in enumerate(events) if event == forward_event
+        ]
+        self.assertEqual(len(forward_indexes), 3)
+        self.assertLess(
+            forward_indexes[0],
+            events.index(
+                ("factory", 1, serial, "http://appium.local:4723")
+            ),
+        )
+        self.assertLess(
+            forward_indexes[1],
+            events.index(
+                ("factory", 2, serial, "http://appium.local:4723")
+            ),
+        )
         self.assertIn(
             (
                 [
@@ -365,6 +477,14 @@ class AppiumMediaUiTests(unittest.TestCase):
             mime_type="image/jpeg",
         )
         self.assertTrue(driver.quit_called)
+        self.assertEqual(
+            fake_sleep.call_args_list,
+            [
+                call(appium_media.APPIUM_PRE_SESSION_WAIT_SECONDS),
+                call(appium_media.APPIUM_PRE_SESSION_WAIT_SECONDS),
+                call(appium_media.APPIUM_POST_QUIT_WAIT_SECONDS),
+            ],
+        )
 
     def test_send_media_with_appium_falls_back_to_direct_intent_after_retry_fails(self):
         factory_calls = []
@@ -416,6 +536,13 @@ class AppiumMediaUiTests(unittest.TestCase):
             WHATSAPP_BUSINESS_PACKAGE,
             run_adb_command=fake_run_adb,
             sleep=fake_sleep,
+        )
+        self.assertEqual(
+            fake_sleep.call_args_list,
+            [
+                call(appium_media.APPIUM_PRE_SESSION_WAIT_SECONDS),
+                call(appium_media.APPIUM_PRE_SESSION_WAIT_SECONDS),
+            ],
         )
 
 

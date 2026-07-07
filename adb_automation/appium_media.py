@@ -1,3 +1,4 @@
+import hashlib
 import os
 import tempfile
 import time
@@ -16,6 +17,10 @@ WAIT_AFTER_SELECT_MEDIA = 2
 WAIT_AFTER_SEND = 2
 APPIUM_NEW_COMMAND_TIMEOUT = 300
 APPIUM_RECOVERY_WAIT_SECONDS = 2
+APPIUM_PRE_SESSION_WAIT_SECONDS = 2
+APPIUM_POST_QUIT_WAIT_SECONDS = 7
+APPIUM_SYSTEM_PORT_BASE = 8200
+APPIUM_SYSTEM_PORT_SPAN = 1000
 DIRECT_MEDIA_PREVIEW_WAIT_SECONDS = 3.5
 DIRECT_SEND_TAP_X_RATIO = 0.90
 DIRECT_SEND_TAP_Y_RATIO = 0.92
@@ -42,6 +47,12 @@ SELECTOR_BY = {
 
 def appium_server_url():
     return os.environ.get(APPIUM_SERVER_ENV_VAR, DEFAULT_APPIUM_SERVER)
+
+
+def appium_system_port_for_serial(serial):
+    digest = hashlib.sha256(str(serial).encode("utf-8")).hexdigest()
+    offset = int(digest[:8], 16) % APPIUM_SYSTEM_PORT_SPAN
+    return APPIUM_SYSTEM_PORT_BASE + offset
 
 
 def is_image_mime(mime_type):
@@ -265,6 +276,7 @@ def start_appium_driver(serial, server_url=None):
     options.no_reset = True
     options.new_command_timeout = APPIUM_NEW_COMMAND_TIMEOUT
     options.set_capability("dontStopAppOnReset", True)
+    options.set_capability("systemPort", appium_system_port_for_serial(serial))
 
     try:
         return webdriver.Remote(server_url or appium_server_url(), options=options)
@@ -282,6 +294,8 @@ def reset_appium_helpers(
     run_adb_command=run_adb,
     sleep=time.sleep,
     wait=True,
+    wait_seconds=APPIUM_RECOVERY_WAIT_SECONDS,
+    remove_forwards=False,
 ):
     print("[*] Resetting Appium UiAutomator2 helper packages...")
     for package in APPIUM_HELPER_PACKAGES:
@@ -290,8 +304,29 @@ def reset_appium_helpers(
             serial,
             run_adb_command=run_adb_command,
         )
+    if remove_forwards:
+        run_best_effort_adb(
+            ["forward", "--remove-all"],
+            serial,
+            run_adb_command=run_adb_command,
+        )
     if wait:
-        sleep(APPIUM_RECOVERY_WAIT_SECONDS)
+        sleep(wait_seconds)
+
+
+def prepare_appium_session(
+    serial,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+):
+    reset_appium_helpers(
+        serial,
+        run_adb_command=run_adb_command,
+        sleep=sleep,
+        wait=True,
+        wait_seconds=APPIUM_PRE_SESSION_WAIT_SECONDS,
+        remove_forwards=True,
+    )
 
 
 def start_appium_driver_with_recovery(
@@ -301,6 +336,11 @@ def start_appium_driver_with_recovery(
     driver_factory=start_appium_driver,
     sleep=time.sleep,
 ):
+    prepare_appium_session(
+        serial,
+        run_adb_command=run_adb_command,
+        sleep=sleep,
+    )
     try:
         return driver_factory(serial, server_url)
     except AutomationError as exc:
@@ -309,7 +349,7 @@ def start_appium_driver_with_recovery(
             return None
 
         print(f"[WARN] Appium UiAutomation startup failed; retrying once: {exc}")
-        reset_appium_helpers(
+        prepare_appium_session(
             serial,
             run_adb_command=run_adb_command,
             sleep=sleep,
@@ -709,7 +749,9 @@ def send_media_with_appium(
                 serial,
                 run_adb_command=run_adb_command,
                 sleep=sleep,
-                wait=False,
+                wait=True,
+                wait_seconds=APPIUM_POST_QUIT_WAIT_SECONDS,
+                remove_forwards=True,
             )
     finally:
         cleanup_staged_media(
