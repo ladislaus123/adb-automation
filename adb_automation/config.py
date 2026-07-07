@@ -30,7 +30,9 @@ QUEUE_POLL_SECONDS_ENV_VAR = "ADB_AUTOMATION_QUEUE_POLL_SECONDS"
 STOCHASTIC_ENABLED_ENV_VAR = "STOCHASTIC_ENABLED"
 
 
-def load_env_file(path=".env"):
+def load_env_file(path=None):
+    if path is None:
+        path = Path(__file__).resolve().parent.parent / ".env"
     env_path = Path(path)
     if not env_path.exists():
         return
@@ -43,7 +45,7 @@ def load_env_file(path=".env"):
         key, value = stripped.split("=", 1)
         key = key.strip()
         value = value.strip()
-        if not key or key in os.environ:
+        if not key or (key in os.environ and os.environ[key] != ""):
             continue
 
         if (

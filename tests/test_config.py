@@ -38,6 +38,21 @@ class EnvFileTests(unittest.TestCase):
 
                 self.assertEqual(os.environ["ADB_AUTOMATION_DB_PASSWORD"], "from-env")
 
+    def test_load_env_file_overrides_empty_environment_values(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text(
+                "ADB_AUTOMATION_DB_PASSWORD=from-file\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ, {"ADB_AUTOMATION_DB_PASSWORD": ""}, clear=True
+            ):
+                config.load_env_file(env_path)
+
+                self.assertEqual(os.environ["ADB_AUTOMATION_DB_PASSWORD"], "from-file")
+
     def test_env_bool_parses_truthy_and_falsey_values(self):
         with patch.dict(os.environ, {"STOCHASTIC_ENABLED": "true"}):
             self.assertTrue(config.env_bool("STOCHASTIC_ENABLED"))
