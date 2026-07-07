@@ -5,8 +5,17 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .adb import device_screen_size, run_adb
-from .config import APPIUM_SERVER_ENV_VAR, DEFAULT_APPIUM_SERVER, STREAM_EXTRA
+from .adb import connect_wifi_device, device_screen_size, run_adb, wake_and_unlock_device
+from .config import (
+    APPIUM_RECONNECT_ON_WEDGE_ENV_VAR,
+    APPIUM_REBOOT_ON_WEDGE_ENV_VAR,
+    APPIUM_SERVER_ENV_VAR,
+    APPIUM_SETTLE_SECONDS_ENV_VAR,
+    DEFAULT_APPIUM_SERVER,
+    STREAM_EXTRA,
+    env_bool,
+    env_int,
+)
 from .errors import AutomationError
 
 DEVICE_CAMERA_DIR = "/sdcard/DCIM/Camera"
@@ -16,26 +25,30 @@ WAIT_AFTER_ATTACH = 1.5
 WAIT_AFTER_SELECT_MEDIA = 2
 WAIT_AFTER_SEND = 2
 APPIUM_NEW_COMMAND_TIMEOUT = 300
-APPIUM_RECOVERY_WAIT_SECONDS = 2
 APPIUM_PRE_SESSION_WAIT_SECONDS = 2
-APPIUM_POST_QUIT_WAIT_SECONDS = 7
+APPIUM_POST_QUIT_WAIT_SECONDS = 1
 APPIUM_SYSTEM_PORT_BASE = 8200
 APPIUM_SYSTEM_PORT_SPAN = 1000
+APPIUM_DEFAULT_SETTLE_SECONDS = 3
+APPIUM_REBOOT_WAIT_SECONDS = 120
+APPIUM_REBOOT_POLL_SECONDS = 5
 DIRECT_MEDIA_PREVIEW_WAIT_SECONDS = 3.5
 DIRECT_SEND_TAP_X_RATIO = 0.90
 DIRECT_SEND_TAP_Y_RATIO = 0.92
-APPIUM_HELPER_PACKAGES = (
-    "io.appium.uiautomator2.server",
-    "io.appium.uiautomator2.server.test",
-    "io.appium.settings",
-    "io.appium.unlock",
+U2_UIAUTOMATOR_PACKAGES = (
     "com.github.uiautomator",
     "com.github.uiautomator.test",
+)
+APPIUM_SERVER_PACKAGES = (
+    "io.appium.uiautomator2.server",
+    "io.appium.uiautomator2.server.test",
 )
 APPIUM_RECOVERABLE_START_MARKERS = (
     "uiautomation not connected",
     "sessionnotcreatedexception",
     "a new session could not be created",
+    "instrumentation process is not running",
+    "cannot start the 'io.appium.uiautomator2.server'",
 )
 
 SELECTOR_BY = {
@@ -289,29 +302,37 @@ def is_recoverable_appium_start_error(exc):
     return any(marker in message for marker in APPIUM_RECOVERABLE_START_MARKERS)
 
 
-def reset_appium_helpers(
-    serial,
-    run_adb_command=run_adb,
-    sleep=time.sleep,
-    wait=True,
-    wait_seconds=APPIUM_RECOVERY_WAIT_SECONDS,
-    remove_forwards=False,
-):
-    print("[*] Resetting Appium UiAutomator2 helper packages...")
-    for package in APPIUM_HELPER_PACKAGES:
+def appium_settle_seconds():
+    return env_int(APPIUM_SETTLE_SECONDS_ENV_VAR, APPIUM_DEFAULT_SETTLE_SECONDS)
+
+
+def stop_u2_uiautomator(serial, run_adb_command=run_adb):
+    print("[*] Stopping openatx uiautomator packages...")
+    for package in U2_UIAUTOMATOR_PACKAGES:
         run_best_effort_adb(
             ["shell", "am", "force-stop", package],
             serial,
             run_adb_command=run_adb_command,
         )
-    if remove_forwards:
+
+
+def stop_appium_uiautomator_server(serial, run_adb_command=run_adb):
+    print("[*] Stopping Appium UiAutomator2 server packages...")
+    for package in APPIUM_SERVER_PACKAGES:
         run_best_effort_adb(
-            ["forward", "--remove-all"],
+            ["shell", "am", "force-stop", package],
             serial,
             run_adb_command=run_adb_command,
         )
-    if wait:
-        sleep(wait_seconds)
+
+
+def remove_appium_forward(serial, run_adb_command=run_adb):
+    port = appium_system_port_for_serial(serial)
+    run_best_effort_adb(
+        ["forward", "--remove", f"tcp:{port}"],
+        serial,
+        run_adb_command=run_adb_command,
+    )
 
 
 def prepare_appium_session(
@@ -319,14 +340,94 @@ def prepare_appium_session(
     run_adb_command=run_adb,
     sleep=time.sleep,
 ):
-    reset_appium_helpers(
+    # Only evict the competing openatx u2 UiAutomation consumer. The Appium
+    # server packages stay untouched: force-stopping a live instrumentation
+    # leaves UiAutomation stale in system_server on API 36+, which is exactly
+    # the wedge the recovery ladder exists to clear.
+    stop_u2_uiautomator(serial, run_adb_command=run_adb_command)
+    sleep(APPIUM_PRE_SESSION_WAIT_SECONDS)
+
+
+def recover_appium_level_1(serial, run_adb_command=run_adb, sleep=time.sleep):
+    print("[*] Appium recovery level 1: stopping UiAutomation consumers...")
+    stop_u2_uiautomator(serial, run_adb_command=run_adb_command)
+    stop_appium_uiautomator_server(serial, run_adb_command=run_adb_command)
+    run_best_effort_adb(
+        ["shell", "pkill", "-f", "uiautomator"],
         serial,
         run_adb_command=run_adb_command,
-        sleep=sleep,
-        wait=True,
-        wait_seconds=APPIUM_PRE_SESSION_WAIT_SECONDS,
-        remove_forwards=True,
     )
+    remove_appium_forward(serial, run_adb_command=run_adb_command)
+    sleep(appium_settle_seconds())
+
+
+def recover_appium_level_2(serial, run_adb_command=run_adb, sleep=time.sleep):
+    print("[*] Appium recovery level 2: reinstalling UiAutomator2 server packages...")
+    stop_u2_uiautomator(serial, run_adb_command=run_adb_command)
+    stop_appium_uiautomator_server(serial, run_adb_command=run_adb_command)
+    run_best_effort_adb(
+        ["shell", "pkill", "-f", "uiautomator"],
+        serial,
+        run_adb_command=run_adb_command,
+    )
+    remove_appium_forward(serial, run_adb_command=run_adb_command)
+    for package in APPIUM_SERVER_PACKAGES:
+        run_best_effort_adb(
+            ["uninstall", package],
+            serial,
+            run_adb_command=run_adb_command,
+        )
+    sleep(appium_settle_seconds())
+
+
+def recover_appium_level_3(serial, run_adb_command=run_adb, sleep=time.sleep):
+    print(f"[*] Appium recovery level 3: reconnecting ADB transport for {serial}...")
+    run_best_effort_adb(["reconnect"], serial, run_adb_command=run_adb_command)
+    sleep(appium_settle_seconds())
+    try:
+        connect_wifi_device(serial)
+    except AutomationError as exc:
+        print(f"[WARN] Could not re-establish Wi-Fi ADB connection: {exc}")
+    sleep(appium_settle_seconds())
+
+
+def recover_appium_level_4(serial, run_adb_command=run_adb, sleep=time.sleep):
+    print(f"[*] Appium recovery level 4: rebooting {serial} (last resort)...")
+    run_best_effort_adb(["reboot"], serial, run_adb_command=run_adb_command)
+    attempts = APPIUM_REBOOT_WAIT_SECONDS // APPIUM_REBOOT_POLL_SECONDS
+    for _ in range(attempts):
+        sleep(APPIUM_REBOOT_POLL_SECONDS)
+        try:
+            connect_wifi_device(serial)
+        except AutomationError:
+            continue
+        boot_completed = run_best_effort_adb(
+            ["shell", "getprop", "sys.boot_completed"],
+            serial,
+            run_adb_command=run_adb_command,
+        )
+        if boot_completed and boot_completed.strip() == "1":
+            break
+    else:
+        print(
+            f"[WARN] Device {serial} did not come back within "
+            f"{APPIUM_REBOOT_WAIT_SECONDS}s after reboot"
+        )
+        return
+    sleep(appium_settle_seconds())
+    try:
+        wake_and_unlock_device(serial, run_adb_command=run_adb_command, sleep=sleep)
+    except AutomationError as exc:
+        print(f"[WARN] Could not wake/unlock {serial} after reboot: {exc}")
+
+
+def build_recovery_ladder():
+    ladder = [recover_appium_level_1, recover_appium_level_2]
+    if env_bool(APPIUM_RECONNECT_ON_WEDGE_ENV_VAR, True):
+        ladder.append(recover_appium_level_3)
+    if env_bool(APPIUM_REBOOT_ON_WEDGE_ENV_VAR, False):
+        ladder.append(recover_appium_level_4)
+    return ladder
 
 
 def start_appium_driver_with_recovery(
@@ -341,25 +442,24 @@ def start_appium_driver_with_recovery(
         run_adb_command=run_adb_command,
         sleep=sleep,
     )
-    try:
-        return driver_factory(serial, server_url)
-    except AutomationError as exc:
-        if not is_recoverable_appium_start_error(exc):
-            print(f"[WARN] Appium driver unavailable; using direct media intent: {exc}")
-            return None
+    last_error = None
+    for recover in (None, *build_recovery_ladder()):
+        if recover is not None:
+            print(
+                "[WARN] Appium UiAutomation startup failed; "
+                f"running {recover.__name__}: {last_error}"
+            )
+            recover(serial, run_adb_command=run_adb_command, sleep=sleep)
+        try:
+            return driver_factory(serial, server_url)
+        except AutomationError as exc:
+            if not is_recoverable_appium_start_error(exc):
+                print(f"[WARN] Appium driver unavailable; using direct media intent: {exc}")
+                return None
+            last_error = exc
 
-        print(f"[WARN] Appium UiAutomation startup failed; retrying once: {exc}")
-        prepare_appium_session(
-            serial,
-            run_adb_command=run_adb_command,
-            sleep=sleep,
-        )
-
-    try:
-        return driver_factory(serial, server_url)
-    except AutomationError as exc:
-        print(f"[WARN] Appium retry failed; using direct media intent: {exc}")
-        return None
+    print(f"[WARN] Appium recovery exhausted; using direct media intent: {last_error}")
+    return None
 
 
 def find_element(driver, selector):
@@ -745,14 +845,9 @@ def send_media_with_appium(
                 driver.quit()
             except Exception as exc:
                 print(f"[WARN] Could not quit Appium driver cleanly: {exc}")
-            reset_appium_helpers(
-                serial,
-                run_adb_command=run_adb_command,
-                sleep=sleep,
-                wait=True,
-                wait_seconds=APPIUM_POST_QUIT_WAIT_SECONDS,
-                remove_forwards=True,
-            )
+            # Let the driver finish its own instrumentation shutdown; no
+            # force-stop here — that poisons the next UiAutomation connect.
+            sleep(APPIUM_POST_QUIT_WAIT_SECONDS)
     finally:
         cleanup_staged_media(
             serial,

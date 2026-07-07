@@ -3,7 +3,7 @@ import re
 import time
 
 from .adb import run_adb
-from .appium_media import appium_server_url, start_appium_driver
+from .appium_media import appium_server_url, prepare_appium_session, start_appium_driver
 from .config import WHATSAPP_BUSINESS_PACKAGE, WHATSAPP_MESSENGER_PACKAGE
 from .errors import AutomationError
 
@@ -207,8 +207,14 @@ def discover_launchable_apps(driver, serial, run_adb_command=run_adb):
     )
 
 
-def start_optional_appium_driver(serial, driver_factory=start_appium_driver):
+def start_optional_appium_driver(
+    serial,
+    driver_factory=start_appium_driver,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+):
     try:
+        prepare_appium_session(serial, run_adb_command=run_adb_command, sleep=sleep)
         return driver_factory(serial, appium_server_url())
     except AutomationError as exc:
         print(f"[WARN] Appium unavailable for stochastic inspection; using ADB: {exc}")
@@ -296,6 +302,8 @@ def run_stochastic_actions(
             driver = start_optional_appium_driver(
                 serial,
                 driver_factory=driver_factory,
+                run_adb_command=run_adb_command,
+                sleep=sleep,
             )
             if driver is None:
                 candidates = []

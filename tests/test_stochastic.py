@@ -106,6 +106,34 @@ class StochasticDiscoveryTests(unittest.TestCase):
         self.assertEqual(packages, ["com.example.notes"])
 
 
+class StochasticOptionalDriverTests(unittest.TestCase):
+    def test_start_optional_appium_driver_prepares_session_before_factory(self):
+        events = []
+        serial = "192.168.10.21:5555"
+        driver = FakeDriver()
+
+        def driver_factory(serial, server_url):
+            events.append(("factory", serial))
+            return driver
+
+        def fake_run_adb(command, serial=None):
+            events.append(("adb", tuple(command), serial))
+            return ""
+
+        with patch("builtins.print"):
+            result = stochastic.start_optional_appium_driver(
+                serial,
+                driver_factory=driver_factory,
+                run_adb_command=fake_run_adb,
+                sleep=lambda seconds: None,
+            )
+
+        self.assertIs(result, driver)
+        u2_stop = ("adb", ("shell", "am", "force-stop", "com.github.uiautomator"), serial)
+        self.assertIn(u2_stop, events)
+        self.assertLess(events.index(u2_stop), events.index(("factory", serial)))
+
+
 class StochasticRunTests(unittest.TestCase):
     def test_run_stochastic_actions_uses_adb_discovery_without_appium(self):
         commands = []

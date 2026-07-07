@@ -324,46 +324,29 @@ class AppiumMediaUiTests(unittest.TestCase):
             factory_calls,
             [(serial, "http://appium.local:4723")],
         )
-        forward_event = ("adb", ["forward", "--remove-all"], serial)
-        forward_indexes = [
-            index for index, event in enumerate(events) if event == forward_event
+        self.assertNotIn((["forward", "--remove-all"], serial), cleanup_commands)
+        force_stopped = [
+            command[3]
+            for command, _serial in cleanup_commands
+            if command[:3] == ["shell", "am", "force-stop"]
         ]
-        self.assertEqual(len(forward_indexes), 2)
+        self.assertNotIn("io.appium.uiautomator2.server", force_stopped)
+        self.assertNotIn("io.appium.uiautomator2.server.test", force_stopped)
+        self.assertNotIn("io.appium.settings", force_stopped)
+        u2_stop_event = (
+            "adb",
+            ["shell", "am", "force-stop", "com.github.uiautomator"],
+            serial,
+        )
         self.assertLess(
-            forward_indexes[0],
+            events.index(u2_stop_event),
             events.index(("factory", serial, "http://appium.local:4723")),
         )
-        self.assertLess(events.index(("quit",)), forward_indexes[1])
-        self.assertIn((["forward", "--remove-all"], serial), cleanup_commands)
         send_latest_visible_media.assert_called_once_with(
             driver,
             WHATSAPP_BUSINESS_PACKAGE,
             caption="caption",
             mime_type="image/jpeg",
-        )
-        self.assertIn(
-            (
-                [
-                    "shell",
-                    "am",
-                    "force-stop",
-                    "io.appium.uiautomator2.server",
-                ],
-                serial,
-            ),
-            cleanup_commands,
-        )
-        self.assertIn(
-            (
-                [
-                    "shell",
-                    "am",
-                    "force-stop",
-                    "io.appium.settings",
-                ],
-                serial,
-            ),
-            cleanup_commands,
         )
         self.assertIn(
             (["shell", "rm", "-f", remote_path], serial),
@@ -393,7 +376,7 @@ class AppiumMediaUiTests(unittest.TestCase):
             ],
         )
 
-    def test_send_media_with_appium_resets_helpers_and_retries_driver(self):
+    def test_send_media_with_appium_recovers_and_retries_driver(self):
         driver = FakeDriver()
         factory_calls = []
         commands = []
@@ -441,35 +424,28 @@ class AppiumMediaUiTests(unittest.TestCase):
                 (serial, "http://appium.local:4723"),
             ],
         )
-        forward_event = ("adb", ["forward", "--remove-all"], serial)
-        forward_indexes = [
-            index for index, event in enumerate(events) if event == forward_event
-        ]
-        self.assertEqual(len(forward_indexes), 3)
-        self.assertLess(
-            forward_indexes[0],
-            events.index(
-                ("factory", 1, serial, "http://appium.local:4723")
-            ),
+        self.assertNotIn((["forward", "--remove-all"], serial), commands)
+        port = appium_media.appium_system_port_for_serial(serial)
+        forward_event = ("adb", ["forward", "--remove", f"tcp:{port}"], serial)
+        server_stop_event = (
+            "adb",
+            ["shell", "am", "force-stop", "io.appium.uiautomator2.server"],
+            serial,
         )
-        self.assertLess(
-            forward_indexes[1],
-            events.index(
-                ("factory", 2, serial, "http://appium.local:4723")
-            ),
-        )
+        first_attempt = events.index(("factory", 1, serial, "http://appium.local:4723"))
+        second_attempt = events.index(("factory", 2, serial, "http://appium.local:4723"))
+        self.assertLess(first_attempt, events.index(server_stop_event))
+        self.assertLess(events.index(server_stop_event), second_attempt)
+        self.assertLess(first_attempt, events.index(forward_event))
+        self.assertLess(events.index(forward_event), second_attempt)
         self.assertIn(
-            (
-                [
-                    "shell",
-                    "am",
-                    "force-stop",
-                    "io.appium.uiautomator2.server",
-                ],
-                serial,
-            ),
+            (["shell", "pkill", "-f", "uiautomator"], serial),
             commands,
         )
+        uninstalls = [
+            command for command, _serial in commands if command[:1] == ["uninstall"]
+        ]
+        self.assertEqual(uninstalls, [])
         send_latest_visible_media.assert_called_once_with(
             driver,
             WHATSAPP_BUSINESS_PACKAGE,
@@ -481,12 +457,12 @@ class AppiumMediaUiTests(unittest.TestCase):
             fake_sleep.call_args_list,
             [
                 call(appium_media.APPIUM_PRE_SESSION_WAIT_SECONDS),
-                call(appium_media.APPIUM_PRE_SESSION_WAIT_SECONDS),
+                call(appium_media.appium_settle_seconds()),
                 call(appium_media.APPIUM_POST_QUIT_WAIT_SECONDS),
             ],
         )
 
-    def test_send_media_with_appium_falls_back_to_direct_intent_after_retry_fails(self):
+    def test_send_media_with_appium_falls_back_to_direct_intent_after_ladder_fails(self):
         factory_calls = []
         commands = []
         serial = "192.168.10.21:5555"
@@ -507,7 +483,15 @@ class AppiumMediaUiTests(unittest.TestCase):
             return_value=remote_path,
         ), patch("adb_automation.appium_media.open_whatsapp_chat"), patch(
             "adb_automation.appium_media.click_direct_media_send"
-        ) as click_direct_media_send, patch("builtins.print"):
+        ) as click_direct_media_send, patch(
+            "adb_automation.appium_media.connect_wifi_device"
+        ), patch.dict(
+            "os.environ",
+            {
+                "ADB_AUTOMATION_APPIUM_RECONNECT_ON_WEDGE": "1",
+                "ADB_AUTOMATION_APPIUM_REBOOT_ON_WEDGE": "0",
+            },
+        ), patch("builtins.print"):
             appium_media.send_media_with_appium(
                 serial,
                 "5511999999999",
@@ -521,7 +505,20 @@ class AppiumMediaUiTests(unittest.TestCase):
                 sleep=fake_sleep,
             )
 
-        self.assertEqual(len(factory_calls), 2)
+        # initial attempt + one retry per ladder level (1, 2, 3)
+        self.assertEqual(len(factory_calls), 4)
+        uninstalls = [
+            command for command, _serial in commands if command[:1] == ["uninstall"]
+        ]
+        self.assertEqual(
+            uninstalls,
+            [
+                ["uninstall", "io.appium.uiautomator2.server"],
+                ["uninstall", "io.appium.uiautomator2.server.test"],
+            ],
+        )
+        self.assertIn((["reconnect"], serial), commands)
+        self.assertNotIn((["reboot"], serial), commands)
         direct_intents = [
             command
             for command, _serial in commands
@@ -537,11 +534,98 @@ class AppiumMediaUiTests(unittest.TestCase):
             run_adb_command=fake_run_adb,
             sleep=fake_sleep,
         )
+        settle = appium_media.appium_settle_seconds()
         self.assertEqual(
             fake_sleep.call_args_list,
             [
                 call(appium_media.APPIUM_PRE_SESSION_WAIT_SECONDS),
-                call(appium_media.APPIUM_PRE_SESSION_WAIT_SECONDS),
+                call(settle),
+                call(settle),
+                call(settle),
+                call(settle),
+            ],
+        )
+
+    def test_start_appium_driver_with_recovery_skips_ladder_on_non_recoverable_error(self):
+        factory_calls = []
+        commands = []
+        serial = "192.168.10.21:5555"
+
+        def driver_factory(serial, server_url):
+            factory_calls.append((serial, server_url))
+            raise AutomationError("Appium-Python-Client is required")
+
+        def fake_run_adb(command, serial=None):
+            commands.append((command, serial))
+            return ""
+
+        with patch("builtins.print"):
+            driver = appium_media.start_appium_driver_with_recovery(
+                serial,
+                "http://appium.local:4723",
+                run_adb_command=fake_run_adb,
+                driver_factory=driver_factory,
+                sleep=Mock(),
+            )
+
+        self.assertIsNone(driver)
+        self.assertEqual(len(factory_calls), 1)
+        force_stopped = [
+            command[3]
+            for command, _serial in commands
+            if command[:3] == ["shell", "am", "force-stop"]
+        ]
+        self.assertNotIn("io.appium.uiautomator2.server", force_stopped)
+        uninstalls = [
+            command for command, _serial in commands if command[:1] == ["uninstall"]
+        ]
+        self.assertEqual(uninstalls, [])
+
+    def test_remove_appium_forward_targets_device_system_port(self):
+        commands = []
+        serial = "192.168.10.21:5555"
+
+        def fake_run_adb(command, serial=None):
+            commands.append((command, serial))
+            return ""
+
+        appium_media.remove_appium_forward(serial, run_adb_command=fake_run_adb)
+
+        port = appium_media.appium_system_port_for_serial(serial)
+        self.assertEqual(commands, [(["forward", "--remove", f"tcp:{port}"], serial)])
+
+    def test_build_recovery_ladder_respects_env_gates(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "ADB_AUTOMATION_APPIUM_RECONNECT_ON_WEDGE": "1",
+                "ADB_AUTOMATION_APPIUM_REBOOT_ON_WEDGE": "0",
+            },
+        ):
+            default_ladder = appium_media.build_recovery_ladder()
+        self.assertEqual(
+            default_ladder,
+            [
+                appium_media.recover_appium_level_1,
+                appium_media.recover_appium_level_2,
+                appium_media.recover_appium_level_3,
+            ],
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "ADB_AUTOMATION_APPIUM_RECONNECT_ON_WEDGE": "0",
+                "ADB_AUTOMATION_APPIUM_REBOOT_ON_WEDGE": "1",
+            },
+        ):
+            gated_ladder = appium_media.build_recovery_ladder()
+        self.assertEqual(
+            gated_ladder,
+            [
+                appium_media.recover_appium_level_1,
+                appium_media.recover_appium_level_2,
+                appium_media.recover_appium_level_4,
             ],
         )
 

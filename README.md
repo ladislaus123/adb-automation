@@ -307,6 +307,9 @@ ADB_AUTOMATION_API_KEY=your-secret-key # Required — all API requests must incl
 
 # ── Appium ────────────────────────────────────────────────────────────────────
 ADB_AUTOMATION_APPIUM_SERVER=http://127.0.0.1:4723   # Appium server URL
+ADB_AUTOMATION_APPIUM_SETTLE_SECONDS=3               # Wait after each recovery step (min 1)
+ADB_AUTOMATION_APPIUM_RECONNECT_ON_WEDGE=1           # adb reconnect when UiAutomation wedges
+ADB_AUTOMATION_APPIUM_REBOOT_ON_WEDGE=0              # Reboot device as last resort (opt-in)
 
 # ── Queue ─────────────────────────────────────────────────────────────────────
 ADB_AUTOMATION_QUEUE_WORKERS=          # Leave blank to use CPU count
