@@ -4,8 +4,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .adb import run_adb
-from .config import APPIUM_SERVER_ENV_VAR, DEFAULT_APPIUM_SERVER
+from .adb import device_screen_size, run_adb
+from .config import APPIUM_SERVER_ENV_VAR, DEFAULT_APPIUM_SERVER, STREAM_EXTRA
 from .errors import AutomationError
 
 DEVICE_CAMERA_DIR = "/sdcard/DCIM/Camera"
@@ -15,6 +15,23 @@ WAIT_AFTER_ATTACH = 1.5
 WAIT_AFTER_SELECT_MEDIA = 2
 WAIT_AFTER_SEND = 2
 APPIUM_NEW_COMMAND_TIMEOUT = 300
+APPIUM_RECOVERY_WAIT_SECONDS = 2
+DIRECT_MEDIA_PREVIEW_WAIT_SECONDS = 3.5
+DIRECT_SEND_TAP_X_RATIO = 0.90
+DIRECT_SEND_TAP_Y_RATIO = 0.92
+APPIUM_HELPER_PACKAGES = (
+    "io.appium.uiautomator2.server",
+    "io.appium.uiautomator2.server.test",
+    "io.appium.settings",
+    "io.appium.unlock",
+    "com.github.uiautomator",
+    "com.github.uiautomator.test",
+)
+APPIUM_RECOVERABLE_START_MARKERS = (
+    "uiautomation not connected",
+    "sessionnotcreatedexception",
+    "a new session could not be created",
+)
 
 SELECTOR_BY = {
     "id": "id",
@@ -255,6 +272,50 @@ def start_appium_driver(serial, server_url=None):
         raise AutomationError(f"Could not start Appium driver: {exc}") from exc
 
 
+def is_recoverable_appium_start_error(exc):
+    message = str(exc).lower()
+    return any(marker in message for marker in APPIUM_RECOVERABLE_START_MARKERS)
+
+
+def reset_appium_helpers(serial, run_adb_command=run_adb, sleep=time.sleep):
+    print("[*] Resetting Appium UiAutomator2 helper packages...")
+    for package in APPIUM_HELPER_PACKAGES:
+        run_best_effort_adb(
+            ["shell", "am", "force-stop", package],
+            serial,
+            run_adb_command=run_adb_command,
+        )
+    sleep(APPIUM_RECOVERY_WAIT_SECONDS)
+
+
+def start_appium_driver_with_recovery(
+    serial,
+    server_url,
+    run_adb_command=run_adb,
+    driver_factory=start_appium_driver,
+    sleep=time.sleep,
+):
+    try:
+        return driver_factory(serial, server_url)
+    except AutomationError as exc:
+        if not is_recoverable_appium_start_error(exc):
+            print(f"[WARN] Appium driver unavailable; using direct media intent: {exc}")
+            return None
+
+        print(f"[WARN] Appium UiAutomation startup failed; retrying once: {exc}")
+        reset_appium_helpers(
+            serial,
+            run_adb_command=run_adb_command,
+            sleep=sleep,
+        )
+
+    try:
+        return driver_factory(serial, server_url)
+    except AutomationError as exc:
+        print(f"[WARN] Appium retry failed; using direct media intent: {exc}")
+        return None
+
+
 def find_element(driver, selector):
     kind, value = selector
     by = SELECTOR_BY.get(kind)
@@ -328,6 +389,38 @@ def media_item_selectors(whatsapp_package):
     )
 
 
+def gallery_attachment_selectors(whatsapp_package):
+    return (
+        ("id", f"{whatsapp_package}:id/pickfiletype_gallery_holder"),
+        ("accessibility", "Galeria"),
+        ("accessibility", "Gallery"),
+        ("xpath", "//*[@content-desc='Galeria']"),
+        ("xpath", "//*[@content-desc='Gallery']"),
+        ("xpath", "//*[@text='Galeria']"),
+        ("xpath", "//*[@text='Gallery']"),
+    )
+
+
+def audio_attachment_selectors(whatsapp_package):
+    return (
+        ("id", f"{whatsapp_package}:id/pickfiletype_audio_holder"),
+        ("accessibility", "Áudio"),
+        ("accessibility", "Audio"),
+        ("xpath", "//*[@content-desc='Áudio']"),
+        ("xpath", "//*[@content-desc='Audio']"),
+        ("xpath", "//*[@text='Áudio']"),
+        ("xpath", "//*[@text='Audio']"),
+    )
+
+
+def media_source_selectors(whatsapp_package, mime_type):
+    if is_audio_mime(mime_type):
+        return audio_attachment_selectors(whatsapp_package)
+    if is_image_mime(mime_type) or is_video_mime(mime_type):
+        return gallery_attachment_selectors(whatsapp_package)
+    return ()
+
+
 def caption_selectors(whatsapp_package):
     return (
         ("id", f"{whatsapp_package}:id/caption"),
@@ -372,12 +465,21 @@ def enter_caption_if_present(driver, whatsapp_package, caption, timeout=2):
     return True
 
 
+def open_attachment_media_source(driver, whatsapp_package, mime_type, timeout=2):
+    selectors = media_source_selectors(whatsapp_package, mime_type)
+    if not selectors:
+        return False
+    return click_if_exists(driver, selectors, timeout=timeout)
+
+
 def send_latest_visible_media(
     driver,
     whatsapp_package,
     caption=None,
+    mime_type=None,
     attach_timeout=6,
     media_timeout=6,
+    source_timeout=2,
     caption_timeout=2,
     send_timeout=7,
 ):
@@ -397,6 +499,19 @@ def send_latest_visible_media(
         media_item_selectors(whatsapp_package),
         timeout=media_timeout,
     )
+    if not selected and open_attachment_media_source(
+        driver,
+        whatsapp_package,
+        mime_type,
+        timeout=source_timeout,
+    ):
+        time.sleep(WAIT_AFTER_ATTACH)
+        selected = click_if_exists(
+            driver,
+            media_item_selectors(whatsapp_package),
+            timeout=media_timeout,
+        )
+
     if not selected:
         dump_ui(driver, "debug_media_item_not_found.xml")
         raise AutomationError(
@@ -425,6 +540,105 @@ def send_latest_visible_media(
     time.sleep(WAIT_AFTER_SEND)
 
 
+def launch_direct_media_intent(
+    serial,
+    phone,
+    remote_path,
+    whatsapp_package,
+    caption=None,
+    mime_type=None,
+    run_adb_command=run_adb,
+):
+    if not mime_type:
+        mime_type = "*/*"
+
+    stream_uri = f"file://{remote_path}"
+    command = [
+        "shell",
+        "am",
+        "start",
+        "-a",
+        "android.intent.action.SEND",
+        "-t",
+        mime_type,
+        "--grant-read-uri-permission",
+        "--es",
+        "jid",
+        f"{phone}@s.whatsapp.net",
+        "--eu",
+        STREAM_EXTRA,
+        stream_uri,
+    ]
+    if caption:
+        command.extend(["--es", "android.intent.extra.TEXT", caption])
+    command.extend(["-p", whatsapp_package])
+    run_adb_command(command, serial=serial)
+
+
+def tap_direct_send_fallback(serial, run_adb_command=run_adb):
+    width, height = device_screen_size(serial, run_adb_command=run_adb_command)
+    run_adb_command(
+        [
+            "shell",
+            "input",
+            "tap",
+            str(int(width * DIRECT_SEND_TAP_X_RATIO)),
+            str(int(height * DIRECT_SEND_TAP_Y_RATIO)),
+        ],
+        serial=serial,
+    )
+
+
+def click_direct_media_send(
+    serial,
+    whatsapp_package,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+):
+    sleep(DIRECT_MEDIA_PREVIEW_WAIT_SECONDS)
+    try:
+        from .whatsapp import click_send_button
+
+        click_send_button(
+            serial,
+            whatsapp_package,
+            fail_on_contact_picker=True,
+        )
+    except AutomationError as exc:
+        if "contact picker" in str(exc).lower():
+            raise
+        print(f"[WARN] Could not click direct media send button; tapping: {exc}")
+        tap_direct_send_fallback(serial, run_adb_command=run_adb_command)
+
+
+def send_direct_media_fallback(
+    serial,
+    phone,
+    remote_path,
+    whatsapp_package,
+    caption=None,
+    mime_type=None,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+):
+    print("[*] Sending media through direct Android intent fallback...")
+    launch_direct_media_intent(
+        serial,
+        phone,
+        remote_path,
+        whatsapp_package,
+        caption=caption,
+        mime_type=mime_type,
+        run_adb_command=run_adb_command,
+    )
+    click_direct_media_send(
+        serial,
+        whatsapp_package,
+        run_adb_command=run_adb_command,
+        sleep=sleep,
+    )
+
+
 def send_media_with_appium(
     serial,
     phone,
@@ -435,6 +649,7 @@ def send_media_with_appium(
     appium_server=None,
     run_adb_command=run_adb,
     driver_factory=start_appium_driver,
+    sleep=time.sleep,
 ):
     remote_path = stage_latest_media(
         serial,
@@ -452,9 +667,33 @@ def send_media_with_appium(
             run_adb_command=run_adb_command,
         )
 
-        driver = driver_factory(serial, appium_server or appium_server_url())
+        driver = start_appium_driver_with_recovery(
+            serial,
+            appium_server or appium_server_url(),
+            run_adb_command=run_adb_command,
+            driver_factory=driver_factory,
+            sleep=sleep,
+        )
+        if driver is None:
+            send_direct_media_fallback(
+                serial,
+                phone,
+                remote_path,
+                whatsapp_package,
+                caption=text,
+                mime_type=mime_type,
+                run_adb_command=run_adb_command,
+                sleep=sleep,
+            )
+            return
+
         try:
-            send_latest_visible_media(driver, whatsapp_package, caption=text)
+            send_latest_visible_media(
+                driver,
+                whatsapp_package,
+                caption=text,
+                mime_type=mime_type,
+            )
         finally:
             try:
                 driver.quit()

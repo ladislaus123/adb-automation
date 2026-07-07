@@ -9,12 +9,15 @@ from adb_automation.errors import AutomationError
 
 
 class FakeElement:
-    def __init__(self):
+    def __init__(self, on_click=None):
         self.clicked = False
         self.sent_keys = []
+        self.on_click = on_click
 
     def click(self):
         self.clicked = True
+        if self.on_click is not None:
+            self.on_click()
 
     def send_keys(self, text):
         self.sent_keys.append(text)
@@ -70,6 +73,7 @@ class AppiumMediaUiTests(unittest.TestCase):
                 driver,
                 WHATSAPP_BUSINESS_PACKAGE,
                 caption="hello caption",
+                mime_type="image/jpeg",
             )
 
         self.assertTrue(attach.clicked)
@@ -98,6 +102,7 @@ class AppiumMediaUiTests(unittest.TestCase):
             appium_media.send_latest_visible_media(
                 driver,
                 WHATSAPP_BUSINESS_PACKAGE,
+                mime_type="image/jpeg",
                 send_timeout=0,
             )
 
@@ -105,6 +110,116 @@ class AppiumMediaUiTests(unittest.TestCase):
         self.assertEqual(
             driver.scripts,
             [("mobile: clickGesture", {"x": 900, "y": 1840})],
+        )
+
+    def test_send_latest_visible_media_clicks_gallery_when_sheet_is_open(self):
+        attach = FakeElement()
+        media = FakeElement()
+        send = FakeElement()
+        driver = FakeDriver()
+
+        def reveal_media():
+            driver.elements[
+                (
+                    "xpath",
+                    f"(//*[@resource-id='{WHATSAPP_BUSINESS_PACKAGE}:id/media_item_view'])[1]",
+                )
+            ] = media
+
+        gallery = FakeElement(on_click=reveal_media)
+        driver.elements.update(
+            {
+                ("id", f"{WHATSAPP_BUSINESS_PACKAGE}:id/input_attach_button"): attach,
+                (
+                    "id",
+                    f"{WHATSAPP_BUSINESS_PACKAGE}:id/pickfiletype_gallery_holder",
+                ): gallery,
+                ("id", f"{WHATSAPP_BUSINESS_PACKAGE}:id/send"): send,
+            }
+        )
+
+        with patch("adb_automation.appium_media.time.sleep"), patch(
+            "builtins.print"
+        ):
+            appium_media.send_latest_visible_media(
+                driver,
+                WHATSAPP_BUSINESS_PACKAGE,
+                mime_type="image/jpeg",
+                media_timeout=0,
+                source_timeout=0,
+            )
+
+        self.assertTrue(attach.clicked)
+        self.assertTrue(gallery.clicked)
+        self.assertTrue(media.clicked)
+        self.assertTrue(send.clicked)
+
+    def test_send_latest_visible_media_clicks_audio_when_sheet_is_open(self):
+        attach = FakeElement()
+        media = FakeElement()
+        send = FakeElement()
+        driver = FakeDriver()
+
+        def reveal_media():
+            driver.elements[
+                (
+                    "xpath",
+                    f"(//*[@resource-id='{WHATSAPP_BUSINESS_PACKAGE}:id/media_item_view'])[1]",
+                )
+            ] = media
+
+        audio = FakeElement(on_click=reveal_media)
+        driver.elements.update(
+            {
+                ("id", f"{WHATSAPP_BUSINESS_PACKAGE}:id/input_attach_button"): attach,
+                (
+                    "id",
+                    f"{WHATSAPP_BUSINESS_PACKAGE}:id/pickfiletype_audio_holder",
+                ): audio,
+                ("id", f"{WHATSAPP_BUSINESS_PACKAGE}:id/send"): send,
+            }
+        )
+
+        with patch("adb_automation.appium_media.time.sleep"), patch(
+            "builtins.print"
+        ):
+            appium_media.send_latest_visible_media(
+                driver,
+                WHATSAPP_BUSINESS_PACKAGE,
+                mime_type="audio/ogg",
+                media_timeout=0,
+                source_timeout=0,
+            )
+
+        self.assertTrue(attach.clicked)
+        self.assertTrue(audio.clicked)
+        self.assertTrue(media.clicked)
+        self.assertTrue(send.clicked)
+
+    def test_attachment_source_selectors_cover_gallery_and_audio_locales(self):
+        self.assertIn(
+            ("id", f"{WHATSAPP_BUSINESS_PACKAGE}:id/pickfiletype_gallery_holder"),
+            appium_media.gallery_attachment_selectors(WHATSAPP_BUSINESS_PACKAGE),
+        )
+        self.assertIn(
+            ("accessibility", "Galeria"),
+            appium_media.gallery_attachment_selectors(WHATSAPP_BUSINESS_PACKAGE),
+        )
+        self.assertIn(
+            ("accessibility", "Gallery"),
+            appium_media.gallery_attachment_selectors(WHATSAPP_BUSINESS_PACKAGE),
+        )
+        self.assertIn(
+            ("id", f"{WHATSAPP_BUSINESS_PACKAGE}:id/pickfiletype_audio_holder"),
+            appium_media.audio_attachment_selectors(WHATSAPP_BUSINESS_PACKAGE),
+        )
+        self.assertIn(
+            ("accessibility", "Áudio"),
+            appium_media.audio_attachment_selectors(WHATSAPP_BUSINESS_PACKAGE),
+        )
+        self.assertIn(
+            ("accessibility", "Audio"),
+            appium_media.audio_attachment_selectors(WHATSAPP_BUSINESS_PACKAGE),
         )
 
     def test_send_media_with_appium_quits_driver(self):
@@ -148,6 +263,7 @@ class AppiumMediaUiTests(unittest.TestCase):
             driver,
             WHATSAPP_BUSINESS_PACKAGE,
             caption="caption",
+            mime_type="image/jpeg",
         )
         self.assertEqual(
             cleanup_commands,
@@ -168,6 +284,123 @@ class AppiumMediaUiTests(unittest.TestCase):
             ],
         )
         self.assertTrue(driver.quit_called)
+
+    def test_send_media_with_appium_resets_helpers_and_retries_driver(self):
+        driver = FakeDriver()
+        factory_calls = []
+        commands = []
+        serial = "192.168.10.21:5555"
+        remote_path = "/sdcard/DCIM/Camera/IMG_20260616_193045.jpg"
+
+        def driver_factory(serial, server_url):
+            factory_calls.append((serial, server_url))
+            if len(factory_calls) == 1:
+                raise AutomationError("UiAutomation not connected")
+            return driver
+
+        def fake_run_adb(command, serial=None):
+            commands.append((command, serial))
+            return ""
+
+        fake_sleep = Mock()
+
+        with patch(
+            "adb_automation.appium_media.stage_latest_media",
+            return_value=remote_path,
+        ), patch("adb_automation.appium_media.open_whatsapp_chat"), patch(
+            "adb_automation.appium_media.send_latest_visible_media"
+        ) as send_latest_visible_media, patch("builtins.print"):
+            appium_media.send_media_with_appium(
+                serial,
+                "5511999999999",
+                "/tmp/image.jpg",
+                WHATSAPP_BUSINESS_PACKAGE,
+                text="caption",
+                mime_type="image/jpeg",
+                appium_server="http://appium.local:4723",
+                run_adb_command=fake_run_adb,
+                driver_factory=driver_factory,
+                sleep=fake_sleep,
+            )
+
+        self.assertEqual(
+            factory_calls,
+            [
+                (serial, "http://appium.local:4723"),
+                (serial, "http://appium.local:4723"),
+            ],
+        )
+        self.assertIn(
+            (
+                [
+                    "shell",
+                    "am",
+                    "force-stop",
+                    "io.appium.uiautomator2.server",
+                ],
+                serial,
+            ),
+            commands,
+        )
+        send_latest_visible_media.assert_called_once_with(
+            driver,
+            WHATSAPP_BUSINESS_PACKAGE,
+            caption="caption",
+            mime_type="image/jpeg",
+        )
+        self.assertTrue(driver.quit_called)
+
+    def test_send_media_with_appium_falls_back_to_direct_intent_after_retry_fails(self):
+        factory_calls = []
+        commands = []
+        serial = "192.168.10.21:5555"
+        remote_path = "/sdcard/DCIM/Camera/IMG_20260616_193045.jpg"
+
+        def driver_factory(serial, server_url):
+            factory_calls.append((serial, server_url))
+            raise AutomationError("UiAutomation not connected")
+
+        def fake_run_adb(command, serial=None):
+            commands.append((command, serial))
+            return ""
+
+        fake_sleep = Mock()
+
+        with patch(
+            "adb_automation.appium_media.stage_latest_media",
+            return_value=remote_path,
+        ), patch("adb_automation.appium_media.open_whatsapp_chat"), patch(
+            "adb_automation.appium_media.click_direct_media_send"
+        ) as click_direct_media_send, patch("builtins.print"):
+            appium_media.send_media_with_appium(
+                serial,
+                "5511999999999",
+                "/tmp/image.jpg",
+                WHATSAPP_BUSINESS_PACKAGE,
+                text="caption",
+                mime_type="image/jpeg",
+                appium_server="http://appium.local:4723",
+                run_adb_command=fake_run_adb,
+                driver_factory=driver_factory,
+                sleep=fake_sleep,
+            )
+
+        self.assertEqual(len(factory_calls), 2)
+        direct_intents = [
+            command
+            for command, _serial in commands
+            if command[:5]
+            == ["shell", "am", "start", "-a", "android.intent.action.SEND"]
+        ]
+        self.assertEqual(len(direct_intents), 1)
+        self.assertIn(f"file://{remote_path}", direct_intents[0])
+        self.assertIn("android.intent.extra.TEXT", direct_intents[0])
+        click_direct_media_send.assert_called_once_with(
+            serial,
+            WHATSAPP_BUSINESS_PACKAGE,
+            run_adb_command=fake_run_adb,
+            sleep=fake_sleep,
+        )
 
 
 class AppiumMediaStagingTests(unittest.TestCase):
