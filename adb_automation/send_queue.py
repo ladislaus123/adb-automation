@@ -93,6 +93,35 @@ def count_normal_send_jobs_for_device(conn, device_id):
     return int(row["job_count"] or 0)
 
 
+def phone_digits(value):
+    return "".join(char for char in str(value or "") if char.isdigit())
+
+
+def list_succeeded_send_phones_for_device(conn, device_id):
+    return fetch_all(
+        conn,
+        """
+        SELECT DISTINCT phone
+        FROM send_jobs
+        WHERE device_id = %s AND status = %s AND endpoint <> %s
+        """,
+        (device_id, JOB_STATUS_SUCCEEDED, STOCHASTIC_ENDPOINT),
+    )
+
+
+def is_phone_known_for_device(conn, device_id, phone):
+    # Jobs store the phone exactly as the API client sent it, so equality has
+    # to happen over normalized digits in Python rather than in SQL.
+    target = phone_digits(phone)
+    if not target:
+        return False
+
+    for row in list_succeeded_send_phones_for_device(conn, device_id):
+        if phone_digits(row.get("phone")) == target:
+            return True
+    return False
+
+
 def enqueue_stochastic_job(conn, device, device_selector, worker_id, lease_seconds):
     return enqueue_send_job(
         conn,

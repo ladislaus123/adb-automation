@@ -535,6 +535,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             WHATSAPP_MESSENGER_PACKAGE,
             text="caption",
             mime_type="audio/mpeg",
+            known_contact=None,
         )
         click_send_button.assert_not_called()
         self.assertEqual(
@@ -568,6 +569,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             WHATSAPP_MESSENGER_PACKAGE,
             text="caption",
             mime_type="image/jpeg",
+            known_contact=None,
         )
         click_send_button.assert_not_called()
         self.assertEqual(
@@ -608,6 +610,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             WHATSAPP_BUSINESS_PACKAGE,
             text=None,
             mime_type="video/mp4",
+            known_contact=None,
         )
         click_send_button.assert_not_called()
 

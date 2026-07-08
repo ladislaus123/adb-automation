@@ -508,7 +508,14 @@ def human_type_text(serial, text, message_entry=None):
         type_visible_text(serial, text[cursor:])
 
 
-def send_whatsapp(serial, phone, text=None, file_path=None, business=False):
+def send_whatsapp(
+    serial,
+    phone,
+    text=None,
+    file_path=None,
+    business=False,
+    known_contact=None,
+):
     phone = normalize_phone(phone)
     if not text and not file_path:
         raise ValueError("you must provide either text or a valid file path.")
@@ -541,6 +548,7 @@ def send_whatsapp(serial, phone, text=None, file_path=None, business=False):
                 whatsapp_package,
                 text=text,
                 mime_type=mime_type,
+                known_contact=known_contact,
             )
             print("[+] Transmission automated successfully!")
             return
@@ -555,7 +563,10 @@ def send_whatsapp(serial, phone, text=None, file_path=None, business=False):
         )
         fail_on_contact_picker = True
     else:
-        launch_whatsapp_text(serial, phone, whatsapp_package)
+        from .chat_navigation import open_chat_via_ui
+
+        if not open_chat_via_ui(serial, phone, whatsapp_package, known_contact):
+            launch_whatsapp_text(serial, phone, whatsapp_package)
         fail_on_contact_picker = False
 
     print("[*] Waiting for WhatsApp UI to settle...")

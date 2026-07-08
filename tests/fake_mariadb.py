@@ -62,6 +62,12 @@ class FakeCursor:
             self.result = self._count_normal_jobs_by_device(params[0], params[1])
             return
 
+        if normalized.startswith("select distinct phone from send_jobs"):
+            self.result = self._list_succeeded_phones_by_device(
+                params[0], params[1], params[2]
+            )
+            return
+
         if (
             normalized.startswith("select * from send_jobs where status = %s")
             and "order by id asc" in normalized
@@ -239,6 +245,18 @@ class FakeCursor:
             if job["device_id"] == device_id and job["endpoint"] != stochastic_endpoint
         )
         return {"job_count": count}
+
+    def _list_succeeded_phones_by_device(self, device_id, status, stochastic_endpoint):
+        phones = []
+        for job in self.conn.send_jobs:
+            if (
+                job["device_id"] == device_id
+                and job["status"] == status
+                and job["endpoint"] != stochastic_endpoint
+                and job["phone"] not in phones
+            ):
+                phones.append(job["phone"])
+        return [{"phone": phone} for phone in phones]
 
     def _find_by_name(self, name):
         for device in self.conn.devices:

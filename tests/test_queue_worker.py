@@ -59,6 +59,7 @@ class QueueWorkerTests(unittest.TestCase):
             text="hello",
             file_path=None,
             business=True,
+            known_contact=False,
         )
         self.assertEqual(
             send_queue.get_send_job(self.conn, job["id"])["status"],
@@ -91,6 +92,7 @@ class QueueWorkerTests(unittest.TestCase):
             text="caption",
             file_path=media_file.name,
             business=True,
+            known_contact=False,
         )
 
     def test_worker_cleans_downloaded_media_file_after_success(self):

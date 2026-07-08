@@ -7,9 +7,11 @@ import mysql.connector
 
 from .adb import ensure_device_ready, wake_and_unlock_device
 from .config import (
+    CONTACT_NAV_ENABLED_ENV_VAR,
     DEFAULT_QUEUE_POLL_SECONDS,
     QUEUE_POLL_SECONDS_ENV_VAR,
     QUEUE_WORKERS_ENV_VAR,
+    env_bool,
     parse_positive_int,
 )
 from .db import init_database, open_database
@@ -25,6 +27,7 @@ from .send_queue import (
     claim_next_send_job,
     complete_send_job,
     fail_send_job,
+    is_phone_known_for_device,
     is_stochastic_job,
 )
 from .stochastic import run_stochastic_actions
@@ -116,10 +119,24 @@ def run_queue_once(conn, queue_worker_id_value=None):
     return True
 
 
+def determine_known_contact(conn, job):
+    if is_stochastic_job(job):
+        return None
+    if not env_bool(CONTACT_NAV_ENABLED_ENV_VAR, True):
+        return None
+
+    try:
+        return is_phone_known_for_device(conn, job["device_id"], job["phone"])
+    except Exception as exc:
+        print(f"[WARN] Known-contact check failed; using link route: {exc}")
+        return None
+
+
 def process_claimed_job(conn, job):
     device = job["device"]
     serial = device_serial(device)
     file_path = job["file_path"]
+    known_contact = determine_known_contact(conn, job)
 
     try:
         ensure_device_ready(serial)
@@ -134,6 +151,7 @@ def process_claimed_job(conn, job):
                 text=job["text"],
                 file_path=file_path,
                 business=bool(job["business"]),
+                known_contact=known_contact,
             )
         complete_send_job(conn, job["id"])
         print(f"[+] Queue job {job['id']} completed.")

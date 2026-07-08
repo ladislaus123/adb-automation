@@ -796,7 +796,10 @@ def send_media_with_appium(
     run_adb_command=run_adb,
     driver_factory=start_appium_driver,
     sleep=time.sleep,
+    known_contact=None,
 ):
+    from .chat_navigation import open_chat_via_ui
+
     remote_path = stage_latest_media(
         serial,
         file_path,
@@ -806,12 +809,21 @@ def send_media_with_appium(
     print(f"[OK] Remote media: {remote_path}")
 
     try:
-        open_whatsapp_chat(
+        # UI navigation must finish before start_appium_driver_with_recovery:
+        # prepare_appium_session force-stops the openatx u2 agent it relies on.
+        if not open_chat_via_ui(
             serial,
             phone,
             whatsapp_package,
+            known_contact,
             run_adb_command=run_adb_command,
-        )
+        ):
+            open_whatsapp_chat(
+                serial,
+                phone,
+                whatsapp_package,
+                run_adb_command=run_adb_command,
+            )
 
         driver = start_appium_driver_with_recovery(
             serial,
