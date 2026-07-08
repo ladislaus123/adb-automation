@@ -20,6 +20,9 @@ from .errors import AutomationError
 
 DEVICE_CAMERA_DIR = "/sdcard/DCIM/Camera"
 WAIT_AFTER_PUSH = 2
+MEDIA_INDEX_TIMEOUT_SECONDS = 15
+MEDIA_INDEX_POLL_INTERVAL_SECONDS = 1
+MEDIA_INDEX_RESCAN_EVERY_ATTEMPTS = 3
 WAIT_AFTER_CHAT_OPEN = 4
 WAIT_AFTER_ATTACH = 1.5
 WAIT_AFTER_SELECT_MEDIA = 2
@@ -188,6 +191,73 @@ def cleanup_staged_media(serial, remote_path, run_adb_command=run_adb):
     )
 
 
+def broadcast_media_scan(serial, remote_path, run_adb_command=run_adb):
+    run_best_effort_adb(
+        [
+            "shell",
+            "am",
+            "broadcast",
+            "-a",
+            "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+            "-d",
+            f"file://{remote_path}",
+        ],
+        serial,
+        run_adb_command=run_adb_command,
+    )
+
+
+def media_is_indexed(serial, remote_path, run_adb_command=run_adb):
+    # Match on the (unique, timestamped) display name rather than _data:
+    # MediaStore stores the canonical /storage/emulated/0/... path while we
+    # push via the /sdcard/... symlink, so a _data match would spuriously fail.
+    filename = Path(remote_path).name
+    try:
+        output = run_adb_command(
+            [
+                "shell",
+                "content",
+                "query",
+                "--uri",
+                "content://media/external/file",
+                "--projection",
+                "_id:_display_name",
+                "--where",
+                f"_display_name='{filename}'",
+            ],
+            serial=serial,
+        )
+    except Exception as exc:
+        print(f"[WARN] MediaStore index query failed: {exc}")
+        return False
+
+    text = str(output or "")
+    return "_id=" in text or text.strip().startswith("Row:")
+
+
+def wait_for_media_indexed(
+    serial,
+    remote_path,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    timeout=MEDIA_INDEX_TIMEOUT_SECONDS,
+    interval=MEDIA_INDEX_POLL_INTERVAL_SECONDS,
+    rescan_every=MEDIA_INDEX_RESCAN_EVERY_ATTEMPTS,
+):
+    attempts = max(1, int(timeout / interval))
+    for attempt in range(attempts):
+        if media_is_indexed(serial, remote_path, run_adb_command=run_adb_command):
+            return True
+        if rescan_every and attempt and attempt % rescan_every == 0:
+            broadcast_media_scan(serial, remote_path, run_adb_command=run_adb_command)
+        sleep(interval)
+
+    print(
+        f"[WARN] Media not confirmed in the gallery index after {timeout}s: {remote_path}"
+    )
+    return False
+
+
 def build_remote_media_path(local_path, mime_type, now):
     suffix = Path(local_path).suffix or ".bin"
     timestamp = now.strftime("%Y%m%d_%H%M%S")
@@ -204,6 +274,9 @@ def stage_latest_media(
     fresh_image_factory=make_fresh_image_without_exif,
     remove_local_file=remove_file_if_exists,
     wait_after_push=WAIT_AFTER_PUSH,
+    sleep=time.sleep,
+    index_timeout=MEDIA_INDEX_TIMEOUT_SECONDS,
+    index_interval=MEDIA_INDEX_POLL_INTERVAL_SECONDS,
 ):
     if not os.path.exists(file_path):
         raise ValueError(f"media file not found: {file_path}")
@@ -227,21 +300,20 @@ def stage_latest_media(
             serial,
             run_adb_command=run_adb_command,
         )
-        run_best_effort_adb(
-            [
-                "shell",
-                "am",
-                "broadcast",
-                "-a",
-                "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-                "-d",
-                f"file://{remote_path}",
-            ],
-            serial,
-            run_adb_command=run_adb_command,
-        )
+        broadcast_media_scan(serial, remote_path, run_adb_command=run_adb_command)
 
-        time.sleep(wait_after_push)
+        sleep(wait_after_push)
+        if wait_for_media_indexed(
+            serial,
+            remote_path,
+            run_adb_command=run_adb_command,
+            sleep=sleep,
+            timeout=index_timeout,
+            interval=index_interval,
+        ):
+            print(f"[OK] Media indexed in gallery: {remote_path}")
+        else:
+            print("[WARN] Proceeding without confirmed gallery index.")
         return remote_path
     finally:
         if temporary_media:

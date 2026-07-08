@@ -672,6 +672,8 @@ class AppiumMediaStagingTests(unittest.TestCase):
                 fresh_image_factory=lambda path: "/tmp/fresh-media.jpg",
                 remove_local_file=removed.append,
                 wait_after_push=0,
+                sleep=lambda *_: None,
+                index_timeout=0,
             )
 
         self.assertEqual(
@@ -701,6 +703,12 @@ class AppiumMediaStagingTests(unittest.TestCase):
             ],
         )
         self.assertEqual(commands[2][0][0:4], ["shell", "am", "broadcast", "-a"])
+        self.assertTrue(
+            any(
+                command[0][:3] == ["shell", "content", "query"]
+                for command in commands
+            )
+        )
         self.assertEqual(removed, ["/tmp/fresh-media.jpg"])
 
     def test_stage_latest_video_pushes_original_file_to_camera_roll(self):
@@ -725,6 +733,8 @@ class AppiumMediaStagingTests(unittest.TestCase):
                 fresh_image_factory=fresh_image_factory,
                 remove_local_file=remove_local_file,
                 wait_after_push=0,
+                sleep=lambda *_: None,
+                index_timeout=0,
             )
 
             self.assertEqual(
@@ -745,6 +755,106 @@ class AppiumMediaStagingTests(unittest.TestCase):
         )
         fresh_image_factory.assert_not_called()
         remove_local_file.assert_not_called()
+
+
+class MediaIndexTests(unittest.TestCase):
+    REMOTE = "/sdcard/DCIM/Camera/IMG_20260616_193045.jpg"
+
+    def test_media_is_indexed_true_on_row(self):
+        commands = []
+
+        def fake_run_adb(command, serial=None):
+            commands.append(command)
+            return "Row: 0 _id=5, _display_name=IMG_20260616_193045.jpg"
+
+        self.assertTrue(
+            appium_media.media_is_indexed(
+                "192.168.10.21:5555", self.REMOTE, run_adb_command=fake_run_adb
+            )
+        )
+        self.assertEqual(
+            commands[0],
+            [
+                "shell",
+                "content",
+                "query",
+                "--uri",
+                "content://media/external/file",
+                "--projection",
+                "_id:_display_name",
+                "--where",
+                "_display_name='IMG_20260616_193045.jpg'",
+            ],
+        )
+
+    def test_media_is_indexed_false_on_no_result(self):
+        self.assertFalse(
+            appium_media.media_is_indexed(
+                "192.168.10.21:5555",
+                self.REMOTE,
+                run_adb_command=lambda command, serial=None: "No result found.",
+            )
+        )
+
+    def test_media_is_indexed_false_on_error(self):
+        def fake_run_adb(command, serial=None):
+            raise AutomationError("content query failed")
+
+        with patch("builtins.print"):
+            self.assertFalse(
+                appium_media.media_is_indexed(
+                    "192.168.10.21:5555", self.REMOTE, run_adb_command=fake_run_adb
+                )
+            )
+
+    def test_wait_for_media_indexed_returns_true_when_row_appears(self):
+        state = {"calls": 0}
+
+        def fake_run_adb(command, serial=None):
+            if command[:3] == ["shell", "content", "query"]:
+                state["calls"] += 1
+                if state["calls"] >= 3:
+                    return "Row: 0 _id=9, _display_name=IMG_20260616_193045.jpg"
+                return "No result found."
+            return ""
+
+        with patch("builtins.print"):
+            result = appium_media.wait_for_media_indexed(
+                "192.168.10.21:5555",
+                self.REMOTE,
+                run_adb_command=fake_run_adb,
+                sleep=lambda *_: None,
+                timeout=15,
+                interval=1,
+            )
+
+        self.assertTrue(result)
+
+    def test_wait_for_media_indexed_times_out_and_rescans(self):
+        commands = []
+
+        def fake_run_adb(command, serial=None):
+            commands.append(command)
+            return "No result found."
+
+        with patch("builtins.print"):
+            result = appium_media.wait_for_media_indexed(
+                "192.168.10.21:5555",
+                self.REMOTE,
+                run_adb_command=fake_run_adb,
+                sleep=lambda *_: None,
+                timeout=5,
+                interval=1,
+                rescan_every=2,
+            )
+
+        self.assertFalse(result)
+        self.assertTrue(
+            any(
+                command[:4] == ["shell", "am", "broadcast", "-a"]
+                for command in commands
+            )
+        )
 
 
 if __name__ == "__main__":
