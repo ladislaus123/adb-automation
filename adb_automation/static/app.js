@@ -21,6 +21,8 @@
   let refreshInFlight = false;
   let toastTimer = null;
   let lastPairIp = "";
+  let currentDevices = [];
+  let editingDeviceId = null;
 
   function init() {
     elements.apiKeyInput.value = localStorage.getItem(API_KEY_STORAGE) || "";
@@ -121,7 +123,13 @@
 
     try {
       const payload = await apiRequest("/api/devices");
-      renderDevices(payload.devices || []);
+      const devices = payload.devices || [];
+      if (editingDeviceId === null) {
+        renderDevices(devices);
+      } else {
+        currentDevices = devices;
+        elements.deviceCount.textContent = `${devices.length} registered`;
+      }
       elements.lastRefresh.textContent = `Refreshed ${new Date().toLocaleTimeString()}`;
       if (!silent) {
         showToast("Device list refreshed.", "success");
@@ -137,6 +145,7 @@
   }
 
   function renderDevices(devices) {
+    currentDevices = devices;
     elements.devicesBody.textContent = "";
     elements.deviceCount.textContent = `${devices.length} registered`;
 
@@ -152,6 +161,11 @@
     }
 
     devices.forEach((device) => {
+      if (editingDeviceId === device.id) {
+        elements.devicesBody.appendChild(renderEditableDeviceRow(device));
+        return;
+      }
+
       const row = document.createElement("tr");
       row.appendChild(renderNameCell(device));
       row.appendChild(textCell(`${device.ip}:${device.port}`));
@@ -180,6 +194,65 @@
     return cell;
   }
 
+  function renderEditableDeviceRow(device) {
+    const row = document.createElement("tr");
+    row.className = "editing-row";
+    row.dataset.deviceId = String(device.id);
+
+    row.appendChild(renderEditInputCell("name", device.name, "Device name"));
+    row.appendChild(renderEndpointEditCell(device));
+    row.appendChild(renderAdbCell(device));
+    row.appendChild(textCell(leaseText(device)));
+    row.appendChild(textCell(formatValue(device.last_seen_at)));
+    row.appendChild(renderEditActionCell(device, row));
+    return row;
+  }
+
+  function renderEditInputCell(name, value, label) {
+    const cell = document.createElement("td");
+    const input = document.createElement("input");
+    input.className = "inline-input";
+    input.name = name;
+    input.type = "text";
+    input.autocomplete = "off";
+    input.required = true;
+    input.setAttribute("aria-label", label);
+    input.value = value || "";
+    cell.appendChild(input);
+    return cell;
+  }
+
+  function renderEndpointEditCell(device) {
+    const cell = document.createElement("td");
+    const wrap = document.createElement("div");
+    const ipInput = document.createElement("input");
+    const portInput = document.createElement("input");
+
+    wrap.className = "endpoint-edit-fields";
+    ipInput.className = "inline-input";
+    ipInput.name = "ip";
+    ipInput.type = "text";
+    ipInput.autocomplete = "off";
+    ipInput.required = true;
+    ipInput.setAttribute("aria-label", "Device IP");
+    ipInput.value = device.ip || "";
+
+    portInput.className = "inline-input port-input";
+    portInput.name = "port";
+    portInput.type = "number";
+    portInput.min = "1";
+    portInput.max = "65535";
+    portInput.inputMode = "numeric";
+    portInput.required = true;
+    portInput.setAttribute("aria-label", "Device port");
+    portInput.value = device.port || "";
+
+    wrap.appendChild(ipInput);
+    wrap.appendChild(portInput);
+    cell.appendChild(wrap);
+    return cell;
+  }
+
   function renderAdbCell(device) {
     const cell = document.createElement("td");
     const pill = document.createElement("span");
@@ -193,15 +266,57 @@
 
   function renderActionCell(device) {
     const cell = document.createElement("td");
-    const button = document.createElement("button");
+    const wrap = document.createElement("div");
+    const connectButton = document.createElement("button");
+    const editButton = document.createElement("button");
 
     cell.className = "action-cell";
-    button.className = "button secondary";
-    button.type = "button";
-    button.textContent = device.connected ? "Reconnect" : "Connect";
-    button.addEventListener("click", () => connectDevice(device.id, button));
+    wrap.className = "row-actions";
+    connectButton.className = "button secondary";
+    connectButton.type = "button";
+    connectButton.textContent = device.connected ? "Reconnect" : "Connect";
+    connectButton.addEventListener("click", () =>
+      connectDevice(device.id, connectButton)
+    );
 
-    cell.appendChild(button);
+    editButton.className = "button secondary";
+    editButton.type = "button";
+    editButton.textContent = "Edit";
+    editButton.addEventListener("click", () => {
+      editingDeviceId = device.id;
+      renderDevices(currentDevices);
+    });
+
+    wrap.appendChild(connectButton);
+    wrap.appendChild(editButton);
+    cell.appendChild(wrap);
+    return cell;
+  }
+
+  function renderEditActionCell(device, row) {
+    const cell = document.createElement("td");
+    const wrap = document.createElement("div");
+    const saveButton = document.createElement("button");
+    const cancelButton = document.createElement("button");
+
+    cell.className = "action-cell";
+    wrap.className = "row-actions";
+    saveButton.className = "button primary";
+    saveButton.type = "button";
+    saveButton.textContent = "Save";
+    saveButton.addEventListener("click", () => updateDevice(device.id, row));
+
+    cancelButton.className = "button secondary";
+    cancelButton.type = "button";
+    cancelButton.textContent = "Cancel";
+    cancelButton.addEventListener("click", () => {
+      editingDeviceId = null;
+      renderDevices(currentDevices);
+    });
+
+    wrap.appendChild(saveButton);
+    wrap.appendChild(cancelButton);
+    cell.appendChild(wrap);
     return cell;
   }
 
@@ -220,6 +335,38 @@
       showToast(error.message, "error");
     } finally {
       button.disabled = false;
+    }
+  }
+
+  async function updateDevice(deviceId, row) {
+    const body = {
+      name: row.querySelector('input[name="name"]').value.trim(),
+      ip: row.querySelector('input[name="ip"]').value.trim(),
+      port: row.querySelector('input[name="port"]').value.trim(),
+    };
+
+    setRowBusy(row, true);
+
+    try {
+      const payload = await apiRequest(`/api/devices/${deviceId}`, {
+        method: "PUT",
+        body,
+      });
+      editingDeviceId = null;
+      if (payload.device) {
+        currentDevices = currentDevices.map((device) =>
+          device.id === payload.device.id ? payload.device : device
+        );
+        renderDevices(currentDevices);
+      }
+      showToast("Device updated.", "success");
+      await refreshDevices(true);
+    } catch (error) {
+      showToast(error.message, "error");
+    } finally {
+      if (editingDeviceId === deviceId) {
+        setRowBusy(row, false);
+      }
     }
   }
 
@@ -276,6 +423,12 @@
 
   function setFormBusy(form, busy) {
     form.querySelectorAll("button, input").forEach((control) => {
+      control.disabled = busy;
+    });
+  }
+
+  function setRowBusy(row, busy) {
+    row.querySelectorAll("button, input").forEach((control) => {
       control.disabled = busy;
     });
   }

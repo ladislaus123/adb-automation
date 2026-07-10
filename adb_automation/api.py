@@ -24,9 +24,10 @@ from .devices import (
     get_device_by_id,
     list_devices,
     mark_device_seen,
+    update_device,
 )
 from .downloaded_media import cleanup_downloaded_media_file, download_media_url_to_temp
-from .errors import AutomationError
+from .errors import AutomationError, DeviceLockError
 from .queue_worker import start_queue_workers
 from .send_queue import (
     JOB_STATUSES,
@@ -115,6 +116,44 @@ def register_device_routes(app):
             ), 201
         except ValueError as exc:
             return json_error(str(exc), 400)
+        except (AutomationError, mysql.connector.Error) as exc:
+            return json_error(str(exc), 500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.put("/api/devices/<int:device_id>")
+    def api_update_device(device_id):
+        auth_error = validate_api_key()
+        if auth_error:
+            return auth_error
+
+        try:
+            payload = get_json_payload()
+            device_request = parse_device_update_request(payload)
+        except ValueError as exc:
+            return json_error(str(exc), 400)
+
+        conn = None
+        try:
+            conn = open_database()
+            init_database(conn)
+            device = update_device(
+                conn,
+                device_id,
+                name=device_request.get("name"),
+                ip=device_request.get("ip"),
+                port=device_request.get("port"),
+            )
+            states = get_connected_device_states()
+            return jsonify(
+                {"success": True, "device": serialize_device(device, states)}
+            )
+        except ValueError as exc:
+            status = 404 if str(exc) == "device not found." else 400
+            return json_error(str(exc), status)
+        except DeviceLockError as exc:
+            return json_error(str(exc), 409)
         except (AutomationError, mysql.connector.Error) as exc:
             return json_error(str(exc), 500)
         finally:
@@ -436,6 +475,42 @@ def parse_device_request(payload):
         "ip": require_string(payload, "ip"),
         "port": parse_network_port(payload.get("port"), "port"),
     }
+
+
+def parse_device_update_request(payload):
+    allowed_fields = {"name", "ip", "port", "endpoint"}
+    provided = allowed_fields.intersection(payload)
+    if not provided:
+        raise ValueError("at least one of name, ip, port, or endpoint is required.")
+
+    parsed = {}
+    if "endpoint" in payload and ("ip" not in payload or "port" not in payload):
+        endpoint_ip, endpoint_port = parse_endpoint(payload.get("endpoint"))
+        parsed["ip"] = endpoint_ip
+        parsed["port"] = endpoint_port
+
+    if "name" in payload:
+        parsed["name"] = require_string(payload, "name")
+    if "ip" in payload:
+        parsed["ip"] = require_string(payload, "ip")
+    if "port" in payload:
+        parsed["port"] = parse_network_port(payload.get("port"), "port")
+
+    return parsed
+
+
+def parse_endpoint(value):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("endpoint must be an ip:port string.")
+    endpoint = value.strip()
+    if ":" not in endpoint:
+        raise ValueError("endpoint must be an ip:port string.")
+
+    ip, port = endpoint.rsplit(":", 1)
+    ip = ip.strip()
+    if not ip:
+        raise ValueError("device IP is required.")
+    return ip, parse_network_port(port.strip(), "port")
 
 
 def parse_pair_request(payload):

@@ -98,6 +98,10 @@ class FakeCursor:
             self.result = [copy.deepcopy(device) for device in self.conn.devices]
             return
 
+        if normalized.startswith("update devices set name = %s"):
+            self._update_device(params)
+            return
+
         if normalized.startswith("update devices set worker_id = %s"):
             self._lease_device(params)
             return
@@ -296,6 +300,14 @@ class FakeCursor:
         last_seen_at, updated_at, device_id = params
         device = self._device_ref(device_id)
         device["last_seen_at"] = last_seen_at
+        device["updated_at"] = updated_at
+
+    def _update_device(self, params):
+        name, ip, port, updated_at, device_id = params
+        device = self._device_ref(device_id)
+        device["name"] = name
+        device["ip"] = ip
+        device["port"] = port
         device["updated_at"] = updated_at
 
     def _claim_job(self, params):

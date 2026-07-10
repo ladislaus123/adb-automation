@@ -123,7 +123,7 @@ h2 {
 
 table {
   width: 100%;
-  min-width: 760px;
+  min-width: 900px;
   border-collapse: collapse;
 }
 
@@ -149,12 +149,40 @@ tr:last-child td {
 }
 
 .action-column {
-  width: 124px;
+  width: 190px;
   text-align: right;
 }
 
 td.action-cell {
   text-align: right;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.editing-row td {
+  background: #f8fbfc;
+}
+
+.inline-input {
+  min-height: 34px;
+  padding: 7px 8px;
+}
+
+.endpoint-edit-fields {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 92px;
+  gap: 8px;
+  align-items: center;
+}
+
+.port-input {
+  max-width: 100px;
 }
 
 .empty-cell {

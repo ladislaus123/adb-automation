@@ -514,6 +514,107 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(conn.devices[0]["ip"], "192.168.10.21")
         self.assertTrue(conn.closed)
 
+    def test_update_device_route_requires_auth(self):
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}):
+            response = self.client.put(
+                "/api/devices/1",
+                json={"name": "phone-01", "ip": "192.168.10.21", "port": 5555},
+            )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_update_device_route_updates_device(self):
+        conn = FakeMariaDBConnection()
+        device = devices.add_device(conn, "phone-01", "192.168.10.21", 5555)
+
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"), patch(
+            "adb_automation.api.get_connected_device_states",
+            return_value={"192.168.10.22:45678": "device"},
+        ):
+            response = self.client.put(
+                f"/api/devices/{device['id']}",
+                json={"name": "phone-main", "ip": "192.168.10.22", "port": 45678},
+                headers=self.auth_headers(),
+            )
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["device"]["name"], "phone-main")
+        self.assertEqual(payload["device"]["ip"], "192.168.10.22")
+        self.assertEqual(payload["device"]["port"], 45678)
+        self.assertEqual(payload["device"]["serial"], "192.168.10.22:45678")
+        self.assertTrue(payload["device"]["connected"])
+        self.assertEqual(conn.devices[0]["name"], "phone-main")
+        self.assertTrue(conn.closed)
+
+    def test_update_device_route_returns_not_found(self):
+        conn = FakeMariaDBConnection()
+
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"):
+            response = self.client.put(
+                "/api/devices/999",
+                json={"ip": "192.168.10.22"},
+                headers=self.auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("device not found", response.get_json()["error"])
+
+    def test_update_device_route_rejects_invalid_port(self):
+        conn = FakeMariaDBConnection()
+        device = devices.add_device(conn, "phone-01", "192.168.10.21", 5555)
+
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"):
+            response = self.client.put(
+                f"/api/devices/{device['id']}",
+                json={"port": 70000},
+                headers=self.auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("between 1 and 65535", response.get_json()["error"])
+
+    def test_update_device_route_rejects_duplicate_endpoint(self):
+        conn = FakeMariaDBConnection()
+        first = devices.add_device(conn, "phone-01", "192.168.10.21", 5555)
+        devices.add_device(conn, "phone-02", "192.168.10.22", 45678)
+
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"):
+            response = self.client.put(
+                f"/api/devices/{first['id']}",
+                json={"ip": "192.168.10.22", "port": 45678},
+                headers=self.auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("IP/port already exists", response.get_json()["error"])
+
+    def test_update_device_route_rejects_active_lock(self):
+        conn = FakeMariaDBConnection()
+        device = devices.add_device(conn, "phone-01", "192.168.10.21", 5555)
+        devices.acquire_device_lease(conn, "phone-01", "worker-a", 600)
+
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"):
+            response = self.client.put(
+                f"/api/devices/{device['id']}",
+                json={"ip": "192.168.10.22"},
+                headers=self.auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("locked", response.get_json()["error"])
+
     def test_connect_device_route_runs_adb_and_marks_seen(self):
         conn = FakeMariaDBConnection()
         device = devices.add_device(conn, "phone-01", "192.168.10.21", 5555)

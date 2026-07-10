@@ -88,10 +88,84 @@ def add_device(conn, name, ip, port):
     return get_device_by_id(conn, device_id)
 
 
+def validate_device_fields(name, ip, port):
+    name = (name or "").strip()
+    ip = (ip or "").strip()
+    port = parse_positive_int(port, "port")
+    if port > 65535:
+        raise ValueError("port must be between 1 and 65535.")
+    if not name:
+        raise ValueError("device name is required.")
+    if not ip:
+        raise ValueError("device IP is required.")
+    return name, ip, port
+
+
+def update_device(conn, device_id, name=None, ip=None, port=None):
+    conn.start_transaction()
+    try:
+        device = get_device_by_id(conn, device_id, for_update=True)
+        if not device:
+            raise ValueError("device not found.")
+
+        if lock_is_active(device):
+            raise DeviceLockError(
+                "device "
+                f"{device['name']} is locked by {device['worker_id']} "
+                f"until {device['locked_until']}."
+            )
+
+        next_name, next_ip, next_port = validate_device_fields(
+            device["name"] if name is None else name,
+            device["ip"] if ip is None else ip,
+            device["port"] if port is None else port,
+        )
+
+        duplicate_name = find_device_by_name(conn, next_name)
+        if duplicate_name and duplicate_name["id"] != device["id"]:
+            raise ValueError("device name already exists.")
+
+        duplicate_endpoint = find_device_by_endpoint(conn, next_ip, next_port)
+        if duplicate_endpoint and duplicate_endpoint["id"] != device["id"]:
+            raise ValueError("device IP/port already exists.")
+
+        timestamp = now_iso()
+        execute_write(
+            conn,
+            """
+            UPDATE devices
+            SET name = %s, ip = %s, port = %s, updated_at = %s
+            WHERE id = %s
+            """,
+            (next_name, next_ip, next_port, timestamp, device["id"]),
+        )
+        conn.commit()
+    except mysql.connector.IntegrityError as exc:
+        conn.rollback()
+        raise ValueError(
+            "device name or IP/port already exists in the database."
+        ) from exc
+    except Exception:
+        conn.rollback()
+        raise
+
+    return get_device_by_id(conn, device["id"])
+
+
 def get_device_by_id(conn, device_id, for_update=False):
     suffix = " FOR UPDATE" if for_update else ""
     return fetch_one(
         conn, f"SELECT * FROM devices WHERE id = %s{suffix}", (device_id,)
+    )
+
+
+def find_device_by_name(conn, name, for_update=False):
+    name = str(name or "").strip()
+    if not name:
+        raise ValueError("device name is required.")
+    suffix = " FOR UPDATE" if for_update else ""
+    return fetch_one(
+        conn, f"SELECT * FROM devices WHERE name = %s{suffix}", (name,)
     )
 
 
@@ -103,10 +177,7 @@ def find_device(conn, selector, for_update=False):
         row = get_device_by_id(conn, int(selector), for_update=for_update)
         if row:
             return row
-    suffix = " FOR UPDATE" if for_update else ""
-    return fetch_one(
-        conn, f"SELECT * FROM devices WHERE name = %s{suffix}", (selector,)
-    )
+    return find_device_by_name(conn, selector, for_update=for_update)
 
 
 def find_device_by_endpoint(conn, ip, port):

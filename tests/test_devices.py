@@ -103,6 +103,71 @@ class DeviceDatabaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             devices.add_device(self.conn, "phone-01", "192.168.10.22", 5555)
 
+    def test_update_device_changes_name_ip_and_port(self):
+        device = devices.add_device(self.conn, "phone-01", "192.168.10.21", 5555)
+
+        updated = devices.update_device(
+            self.conn,
+            device["id"],
+            name="phone-main",
+            ip="192.168.10.22",
+            port=45678,
+        )
+
+        self.assertEqual(updated["name"], "phone-main")
+        self.assertEqual(updated["ip"], "192.168.10.22")
+        self.assertEqual(updated["port"], 45678)
+        self.assertEqual(devices.device_serial(updated), "192.168.10.22:45678")
+
+    def test_update_device_allows_same_name_and_endpoint(self):
+        device = devices.add_device(self.conn, "phone-01", "192.168.10.21", 5555)
+
+        updated = devices.update_device(
+            self.conn,
+            device["id"],
+            name="phone-01",
+            ip="192.168.10.21",
+            port=5555,
+        )
+
+        self.assertEqual(updated["id"], device["id"])
+        self.assertEqual(updated["name"], "phone-01")
+
+    def test_update_device_rejects_duplicate_name(self):
+        first = devices.add_device(self.conn, "phone-01", "192.168.10.21", 5555)
+        devices.add_device(self.conn, "phone-02", "192.168.10.22", 5555)
+
+        with self.assertRaisesRegex(ValueError, "name already exists"):
+            devices.update_device(self.conn, first["id"], name="phone-02")
+
+    def test_update_device_rejects_duplicate_endpoint(self):
+        first = devices.add_device(self.conn, "phone-01", "192.168.10.21", 5555)
+        devices.add_device(self.conn, "phone-02", "192.168.10.22", 45678)
+
+        with self.assertRaisesRegex(ValueError, "IP/port already exists"):
+            devices.update_device(
+                self.conn,
+                first["id"],
+                ip="192.168.10.22",
+                port=45678,
+            )
+
+    def test_update_device_rejects_invalid_fields(self):
+        device = devices.add_device(self.conn, "phone-01", "192.168.10.21", 5555)
+
+        with self.assertRaisesRegex(ValueError, "device name is required"):
+            devices.update_device(self.conn, device["id"], name="")
+
+        with self.assertRaisesRegex(ValueError, "between 1 and 65535"):
+            devices.update_device(self.conn, device["id"], port=70000)
+
+    def test_update_device_rejects_active_lock(self):
+        device = devices.add_device(self.conn, "phone-01", "192.168.10.21", 5555)
+        devices.acquire_device_lease(self.conn, "phone-01", "worker-a", 600)
+
+        with self.assertRaises(DeviceLockError):
+            devices.update_device(self.conn, device["id"], ip="192.168.10.22")
+
 
 if __name__ == "__main__":
     unittest.main()
