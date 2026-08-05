@@ -1,6 +1,6 @@
 # ADB Automation — WhatsApp Sender
 
-A Python-based automation server that sends WhatsApp messages (text, images, video, voice) via real Android devices over ADB and Appium. Exposes a REST API and a CLI, backed by a MariaDB/MySQL job queue.
+A Python-based automation server that sends WhatsApp messages (text, images, video, voice) via real Android devices over ADB and Appium. Devices can use Wi-Fi ADB or USB debugging. Exposes a REST API and a CLI, backed by a MariaDB/MySQL job queue.
 
 ---
 
@@ -31,7 +31,7 @@ Your Code / App
                                │
                         Appium Server (port 4723)
                                │
-                         Android Device (ADB / Wi-Fi)
+                      Android Device (ADB Wi-Fi / USB)
                                │
                           WhatsApp App
 ```
@@ -405,12 +405,21 @@ python -m adb_automation send \
 python -m adb_automation devices list
 ```
 
-**Add a device:**
+**Add a Wi-Fi device:**
 ```bash
 python -m adb_automation devices add \
   --name "my-phone" \
+  --adb-transport wifi \
   --ip 192.168.1.50 \
   --port 37001
+```
+
+**Add a USB device:**
+```bash
+python -m adb_automation devices add \
+  --name "my-usb-phone" \
+  --adb-transport usb \
+  --usb-serial R5CW123ABC
 ```
 
 **Unlock a stuck device lease:**
@@ -461,8 +470,10 @@ HTTP 200
     {
       "id": 1,
       "name": "my-phone",
+      "adb_transport": "wifi",
       "ip": "192.168.1.50",
       "port": 37001,
+      "usb_serial": null,
       "serial": "192.168.1.50:37001",
       "adb_state": "device",
       "connected": true,
@@ -484,16 +495,29 @@ HTTP 200
 ```json
 {
   "name": "my-phone",
+  "adb_transport": "wifi",
   "ip": "192.168.1.50",
   "port": 37001
+}
+```
+
+USB devices use the raw serial shown by `adb devices`:
+
+```json
+{
+  "name": "my-usb-phone",
+  "adb_transport": "usb",
+  "usb_serial": "R5CW123ABC"
 }
 ```
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | Yes | Unique human-readable label |
-| `ip` | string | Yes | Device Wi-Fi IP address |
-| `port` | integer | Yes | Device ADB port (shown in Developer Options) |
+| `adb_transport` | string | No | `wifi` or `usb`; defaults to `wifi` |
+| `ip` | string | Wi-Fi | Device Wi-Fi IP address |
+| `port` | integer | Wi-Fi | Device ADB port (shown in Developer Options) |
+| `usb_serial` | string | USB | USB serial shown by `adb devices` |
 
 **Response:**
 ```json
@@ -543,9 +567,9 @@ HTTP 201
 
 ---
 
-#### `POST /api/devices/{id}/connect` — Connect to a device
+#### `POST /api/devices/{id}/connect` — Connect or check a device
 
-Runs `adb connect` for a registered device.
+Runs `adb connect` for Wi-Fi devices. For USB devices, verifies that the USB serial is visible in `adb devices`.
 
 ```
 POST /api/devices/1/connect
@@ -778,6 +802,17 @@ All endpoints return a consistent error shape:
 ---
 
 ## Device Setup (Android)
+
+### Enable USB Debugging
+
+1. Go to **Settings → About Phone** and tap **Build Number** 7 times.
+2. Go to **Settings → Developer Options**.
+3. Enable **USB Debugging**.
+4. Connect the phone by USB, authorize the computer on the phone, then note the serial from:
+
+```bash
+adb devices
+```
 
 ### Enable Wireless Debugging (Android 11+)
 

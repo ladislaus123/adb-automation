@@ -5,7 +5,12 @@ import socket
 import mysql.connector
 from flask import Flask, jsonify, request, send_from_directory
 
-from .adb import connect_wifi_device, get_connected_device_states, pair_wifi_device
+from .adb import (
+    connect_wifi_device,
+    ensure_device_ready,
+    get_connected_device_states,
+    pair_wifi_device,
+)
 from .config import (
     API_KEY_ENV_VAR,
     DEFAULT_LEASE_SECONDS,
@@ -17,13 +22,17 @@ from .config import (
 )
 from .db import init_database, open_database
 from .devices import (
+    ADB_TRANSPORT_USB,
+    ADB_TRANSPORT_WIFI,
     add_device,
+    device_adb_transport,
     device_serial,
     find_device,
     find_device_by_endpoint,
     get_device_by_id,
     list_devices,
     mark_device_seen,
+    normalize_adb_transport,
     update_device,
 )
 from .downloaded_media import cleanup_downloaded_media_file, download_media_url_to_temp
@@ -109,6 +118,8 @@ def register_device_routes(app):
                 device_request["name"],
                 device_request["ip"],
                 device_request["port"],
+                adb_transport=device_request["adb_transport"],
+                usb_serial=device_request["usb_serial"],
             )
             states = get_connected_device_states()
             return jsonify(
@@ -144,6 +155,8 @@ def register_device_routes(app):
                 name=device_request.get("name"),
                 ip=device_request.get("ip"),
                 port=device_request.get("port"),
+                adb_transport=device_request.get("adb_transport"),
+                usb_serial=device_request.get("usb_serial"),
             )
             states = get_connected_device_states()
             return jsonify(
@@ -175,7 +188,11 @@ def register_device_routes(app):
                 return json_error("device not found.", 404)
 
             serial = device_serial(device)
-            adb_output = connect_wifi_device(serial)
+            if device_adb_transport(device) == ADB_TRANSPORT_USB:
+                ensure_device_ready(serial, adb_transport=ADB_TRANSPORT_USB)
+                adb_output = f"USB device {serial} is visible in adb devices."
+            else:
+                adb_output = connect_wifi_device(serial)
             states = get_connected_device_states()
             if states.get(serial) == "device":
                 mark_device_seen(conn, device["id"])
@@ -470,20 +487,38 @@ def parse_media_file_request(payload):
 
 
 def parse_device_request(payload):
+    adb_transport = parse_adb_transport(payload.get("adb_transport"))
+    if adb_transport == ADB_TRANSPORT_USB:
+        return {
+            "name": require_string(payload, "name"),
+            "ip": None,
+            "port": None,
+            "adb_transport": adb_transport,
+            "usb_serial": require_string(payload, "usb_serial"),
+        }
+
     return {
         "name": require_string(payload, "name"),
         "ip": require_string(payload, "ip"),
         "port": parse_network_port(payload.get("port"), "port"),
+        "adb_transport": adb_transport,
+        "usb_serial": None,
     }
 
 
 def parse_device_update_request(payload):
-    allowed_fields = {"name", "ip", "port", "endpoint"}
+    allowed_fields = {"name", "ip", "port", "endpoint", "adb_transport", "usb_serial"}
     provided = allowed_fields.intersection(payload)
     if not provided:
-        raise ValueError("at least one of name, ip, port, or endpoint is required.")
+        raise ValueError(
+            "at least one of name, ip, port, endpoint, adb_transport, "
+            "or usb_serial is required."
+        )
 
     parsed = {}
+    if "adb_transport" in payload:
+        parsed["adb_transport"] = parse_adb_transport(payload.get("adb_transport"))
+
     if "endpoint" in payload and ("ip" not in payload or "port" not in payload):
         endpoint_ip, endpoint_port = parse_endpoint(payload.get("endpoint"))
         parsed["ip"] = endpoint_ip
@@ -495,6 +530,8 @@ def parse_device_update_request(payload):
         parsed["ip"] = require_string(payload, "ip")
     if "port" in payload:
         parsed["port"] = parse_network_port(payload.get("port"), "port")
+    if "usb_serial" in payload:
+        parsed["usb_serial"] = require_string(payload, "usb_serial")
 
     return parsed
 
@@ -526,6 +563,14 @@ def parse_pair_request(payload):
     }
 
 
+def parse_adb_transport(value):
+    if value is None:
+        return ADB_TRANSPORT_WIFI
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("adb_transport must be wifi or usb.")
+    return normalize_adb_transport(value)
+
+
 def parse_network_port(value, field):
     port = parse_positive_int(value, field)
     if port > 65535:
@@ -539,8 +584,10 @@ def serialize_device(device, states):
     return {
         "id": device["id"],
         "name": device["name"],
+        "adb_transport": device_adb_transport(device),
         "ip": device["ip"],
         "port": device["port"],
+        "usb_serial": device.get("usb_serial"),
         "serial": serial,
         "adb_state": adb_state or "disconnected",
         "connected": adb_state == "device",

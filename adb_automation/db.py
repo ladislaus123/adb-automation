@@ -85,6 +85,67 @@ def open_database(database=None, host=None, port=None, user=None, password=None)
     return conn
 
 
+def _row_value(row, key, index):
+    if isinstance(row, dict):
+        return row.get(key)
+    if row is None:
+        return None
+    try:
+        return row[index]
+    except (IndexError, TypeError):
+        return None
+
+
+def _device_column(cursor, column):
+    cursor.execute("SHOW COLUMNS FROM devices LIKE %s", (column,))
+    return cursor.fetchone()
+
+
+def _device_column_exists(cursor, column):
+    return _device_column(cursor, column) is not None
+
+
+def _device_column_is_not_nullable(cursor, column):
+    row = _device_column(cursor, column)
+    return str(_row_value(row, "Null", 2) or "").upper() == "NO"
+
+
+def _device_index_exists(cursor, index_name):
+    cursor.execute("SHOW INDEX FROM devices WHERE Key_name = %s", (index_name,))
+    return cursor.fetchone() is not None
+
+
+def migrate_devices_schema(cursor):
+    if not _device_column_exists(cursor, "adb_transport"):
+        cursor.execute(
+            """
+            ALTER TABLE devices
+            ADD COLUMN adb_transport VARCHAR(16) NOT NULL DEFAULT 'wifi' AFTER port
+            """
+        )
+
+    if not _device_column_exists(cursor, "usb_serial"):
+        cursor.execute(
+            """
+            ALTER TABLE devices
+            ADD COLUMN usb_serial VARCHAR(255) NULL AFTER adb_transport
+            """
+        )
+
+    if _device_column_is_not_nullable(cursor, "ip"):
+        cursor.execute("ALTER TABLE devices MODIFY ip VARCHAR(255) NULL")
+    if _device_column_is_not_nullable(cursor, "port"):
+        cursor.execute("ALTER TABLE devices MODIFY port INTEGER NULL")
+
+    if not _device_index_exists(cursor, "uq_devices_usb_serial"):
+        cursor.execute(
+            """
+            ALTER TABLE devices
+            ADD UNIQUE KEY uq_devices_usb_serial (usb_serial)
+            """
+        )
+
+
 def init_database(conn):
     cursor = conn.cursor()
     try:
@@ -93,8 +154,10 @@ def init_database(conn):
             CREATE TABLE IF NOT EXISTS devices (
                 id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
                 name VARCHAR(255) NOT NULL,
-                ip VARCHAR(255) NOT NULL,
-                port INTEGER NOT NULL,
+                ip VARCHAR(255),
+                port INTEGER,
+                adb_transport VARCHAR(16) NOT NULL DEFAULT 'wifi',
+                usb_serial VARCHAR(255),
                 worker_id VARCHAR(255),
                 locked_until VARCHAR(32),
                 last_seen_at VARCHAR(32),
@@ -103,10 +166,12 @@ def init_database(conn):
                 PRIMARY KEY (id),
                 UNIQUE KEY uq_devices_name (name),
                 UNIQUE KEY uq_devices_endpoint (ip, port),
+                UNIQUE KEY uq_devices_usb_serial (usb_serial),
                 KEY idx_devices_locked_until (locked_until)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """
         )
+        migrate_devices_schema(cursor)
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS send_jobs (

@@ -1,6 +1,8 @@
 (function () {
   const API_KEY_STORAGE = "adbAutomationApiKey";
   const AUTO_REFRESH_MS = 10000;
+  const TRANSPORT_WIFI = "wifi";
+  const TRANSPORT_USB = "usb";
 
   const elements = {
     apiKeyForm: document.getElementById("apiKeyForm"),
@@ -15,6 +17,9 @@
     deviceForm: document.getElementById("deviceForm"),
     pairIpInput: document.getElementById("pairIpInput"),
     connectIpInput: document.getElementById("connectIpInput"),
+    deviceTransportInput: document.getElementById("deviceTransportInput"),
+    wifiDeviceFields: document.getElementById("wifiDeviceFields"),
+    usbDeviceFields: document.getElementById("usbDeviceFields"),
     toast: document.getElementById("toast"),
   };
 
@@ -34,6 +39,8 @@
     elements.pairForm.addEventListener("submit", handlePairSubmit);
     elements.deviceForm.addEventListener("submit", handleDeviceSubmit);
     elements.pairIpInput.addEventListener("input", syncConnectIp);
+    elements.deviceTransportInput.addEventListener("change", updateDeviceFormTransport);
+    updateDeviceFormTransport();
 
     if (getApiKey()) {
       refreshDevices(true);
@@ -152,7 +159,7 @@
     if (!devices.length) {
       const row = document.createElement("tr");
       const cell = document.createElement("td");
-      cell.colSpan = 6;
+      cell.colSpan = 7;
       cell.className = "empty-cell";
       cell.textContent = "No devices registered";
       row.appendChild(cell);
@@ -168,7 +175,8 @@
 
       const row = document.createElement("tr");
       row.appendChild(renderNameCell(device));
-      row.appendChild(textCell(`${device.ip}:${device.port}`));
+      row.appendChild(textCell(formatTransport(device.adb_transport)));
+      row.appendChild(textCell(device.serial));
       row.appendChild(renderAdbCell(device));
       row.appendChild(textCell(leaseText(device)));
       row.appendChild(textCell(formatValue(device.last_seen_at)));
@@ -200,7 +208,8 @@
     row.dataset.deviceId = String(device.id);
 
     row.appendChild(renderEditInputCell("name", device.name, "Device name"));
-    row.appendChild(renderEndpointEditCell(device));
+    row.appendChild(renderTransportEditCell(device, row));
+    row.appendChild(renderConnectionEditCell(device));
     row.appendChild(renderAdbCell(device));
     row.appendChild(textCell(leaseText(device)));
     row.appendChild(textCell(formatValue(device.last_seen_at)));
@@ -222,13 +231,62 @@
     return cell;
   }
 
-  function renderEndpointEditCell(device) {
+  function renderTransportEditCell(device, row) {
     const cell = document.createElement("td");
+    const select = document.createElement("select");
+
+    select.className = "inline-input";
+    select.name = "adb_transport";
+    select.setAttribute("aria-label", "ADB transport");
+    select.appendChild(optionElement(TRANSPORT_WIFI, "Wi-Fi"));
+    select.appendChild(optionElement(TRANSPORT_USB, "USB"));
+    select.value = device.adb_transport || TRANSPORT_WIFI;
+    select.addEventListener("change", () => {
+      const connectionCell = row.querySelector("[data-connection-cell]");
+      if (connectionCell) {
+        renderConnectionInputs(connectionCell, device, select.value);
+      }
+    });
+
+    cell.appendChild(select);
+    return cell;
+  }
+
+  function optionElement(value, label) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    return option;
+  }
+
+  function renderConnectionEditCell(device) {
+    const cell = document.createElement("td");
+    cell.dataset.connectionCell = "true";
+    renderConnectionInputs(cell, device, device.adb_transport || TRANSPORT_WIFI);
+    return cell;
+  }
+
+  function renderConnectionInputs(cell, device, transport) {
     const wrap = document.createElement("div");
+    cell.textContent = "";
+
+    if (transport === TRANSPORT_USB) {
+      const serialInput = document.createElement("input");
+      serialInput.className = "inline-input";
+      serialInput.name = "usb_serial";
+      serialInput.type = "text";
+      serialInput.autocomplete = "off";
+      serialInput.required = true;
+      serialInput.setAttribute("aria-label", "USB serial");
+      serialInput.value = device.usb_serial || "";
+      cell.appendChild(serialInput);
+      return;
+    }
+
     const ipInput = document.createElement("input");
     const portInput = document.createElement("input");
 
-    wrap.className = "endpoint-edit-fields";
+    wrap.className = "connection-edit-fields";
     ipInput.className = "inline-input";
     ipInput.name = "ip";
     ipInput.type = "text";
@@ -250,7 +308,6 @@
     wrap.appendChild(ipInput);
     wrap.appendChild(portInput);
     cell.appendChild(wrap);
-    return cell;
   }
 
   function renderAdbCell(device) {
@@ -274,7 +331,12 @@
     wrap.className = "row-actions";
     connectButton.className = "button secondary";
     connectButton.type = "button";
-    connectButton.textContent = device.connected ? "Reconnect" : "Connect";
+    connectButton.textContent =
+      device.adb_transport === TRANSPORT_USB
+        ? "Check"
+        : device.connected
+          ? "Reconnect"
+          : "Connect";
     connectButton.addEventListener("click", () =>
       connectDevice(device.id, connectButton)
     );
@@ -339,11 +401,18 @@
   }
 
   async function updateDevice(deviceId, row) {
+    const adbTransport = row.querySelector('select[name="adb_transport"]').value;
     const body = {
       name: row.querySelector('input[name="name"]').value.trim(),
-      ip: row.querySelector('input[name="ip"]').value.trim(),
-      port: row.querySelector('input[name="port"]').value.trim(),
+      adb_transport: adbTransport,
     };
+
+    if (adbTransport === TRANSPORT_USB) {
+      body.usb_serial = row.querySelector('input[name="usb_serial"]').value.trim();
+    } else {
+      body.ip = row.querySelector('input[name="ip"]').value.trim();
+      body.port = row.querySelector('input[name="port"]').value.trim();
+    }
 
     setRowBusy(row, true);
 
@@ -396,6 +465,7 @@
     try {
       await apiRequest("/api/devices", { method: "POST", body });
       elements.deviceForm.reset();
+      updateDeviceFormTransport();
       showToast("Device saved.", "success");
       refreshDevices(true);
     } catch (error) {
@@ -413,6 +483,20 @@
     lastPairIp = nextPairIp;
   }
 
+  function updateDeviceFormTransport() {
+    const isUsb = elements.deviceTransportInput.value === TRANSPORT_USB;
+    elements.wifiDeviceFields.hidden = isUsb;
+    elements.usbDeviceFields.hidden = !isUsb;
+    elements.wifiDeviceFields.querySelectorAll("input").forEach((input) => {
+      input.disabled = isUsb;
+      input.required = !isUsb;
+    });
+    elements.usbDeviceFields.querySelectorAll("input").forEach((input) => {
+      input.disabled = !isUsb;
+      input.required = isUsb;
+    });
+  }
+
   function formBody(form) {
     const data = {};
     new FormData(form).forEach((value, key) => {
@@ -422,13 +506,16 @@
   }
 
   function setFormBusy(form, busy) {
-    form.querySelectorAll("button, input").forEach((control) => {
+    form.querySelectorAll("button, input, select").forEach((control) => {
       control.disabled = busy;
     });
+    if (!busy && form === elements.deviceForm) {
+      updateDeviceFormTransport();
+    }
   }
 
   function setRowBusy(row, busy) {
-    row.querySelectorAll("button, input").forEach((control) => {
+    row.querySelectorAll("button, input, select").forEach((control) => {
       control.disabled = busy;
     });
   }
@@ -454,6 +541,10 @@
       return "muted";
     }
     return "offline";
+  }
+
+  function formatTransport(transport) {
+    return transport === TRANSPORT_USB ? "USB" : "Wi-Fi";
   }
 
   function formatValue(value) {

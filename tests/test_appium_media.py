@@ -485,7 +485,7 @@ class AppiumMediaUiTests(unittest.TestCase):
             "adb_automation.appium_media.click_direct_media_send"
         ) as click_direct_media_send, patch(
             "adb_automation.appium_media.connect_wifi_device"
-        ), patch.dict(
+        ) as connect_wifi_device, patch.dict(
             "os.environ",
             {
                 "ADB_AUTOMATION_APPIUM_RECONNECT_ON_WEDGE": "1",
@@ -518,6 +518,7 @@ class AppiumMediaUiTests(unittest.TestCase):
             ],
         )
         self.assertIn((["reconnect"], serial), commands)
+        connect_wifi_device.assert_called_once_with(serial)
         self.assertNotIn((["reboot"], serial), commands)
         direct_intents = [
             command
@@ -545,6 +546,62 @@ class AppiumMediaUiTests(unittest.TestCase):
                 call(settle),
             ],
         )
+
+    def test_recover_appium_level_3_skips_wifi_connect_for_usb(self):
+        commands = []
+        serial = "R5CW123ABC"
+
+        def fake_run_adb(command, serial=None):
+            commands.append((command, serial))
+            return ""
+
+        fake_sleep = Mock()
+        with patch(
+            "adb_automation.appium_media.connect_wifi_device"
+        ) as connect_wifi_device, patch("builtins.print"):
+            appium_media.recover_appium_level_3(
+                serial,
+                run_adb_command=fake_run_adb,
+                sleep=fake_sleep,
+                adb_transport="usb",
+            )
+
+        self.assertEqual(commands, [(["reconnect"], serial)])
+        connect_wifi_device.assert_not_called()
+        self.assertEqual(
+            fake_sleep.call_args_list,
+            [
+                call(appium_media.appium_settle_seconds()),
+                call(appium_media.appium_settle_seconds()),
+            ],
+        )
+
+    def test_recover_appium_level_4_skips_wifi_connect_for_usb(self):
+        commands = []
+        serial = "R5CW123ABC"
+
+        def fake_run_adb(command, serial=None):
+            commands.append((command, serial))
+            if command == ["shell", "getprop", "sys.boot_completed"]:
+                return "1"
+            return ""
+
+        fake_sleep = Mock()
+        with patch(
+            "adb_automation.appium_media.connect_wifi_device"
+        ) as connect_wifi_device, patch(
+            "adb_automation.appium_media.wake_and_unlock_device"
+        ), patch("builtins.print"):
+            appium_media.recover_appium_level_4(
+                serial,
+                run_adb_command=fake_run_adb,
+                sleep=fake_sleep,
+                adb_transport="usb",
+            )
+
+        connect_wifi_device.assert_not_called()
+        self.assertIn((["reboot"], serial), commands)
+        self.assertIn((["shell", "getprop", "sys.boot_completed"], serial), commands)
 
     def test_start_appium_driver_with_recovery_skips_ladder_on_non_recoverable_error(self):
         factory_calls = []

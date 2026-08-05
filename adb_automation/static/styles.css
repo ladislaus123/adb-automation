@@ -35,7 +35,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -123,7 +124,7 @@ h2 {
 
 table {
   width: 100%;
-  min-width: 900px;
+  min-width: 980px;
   border-collapse: collapse;
 }
 
@@ -174,7 +175,7 @@ td.action-cell {
   padding: 7px 8px;
 }
 
-.endpoint-edit-fields {
+.connection-edit-fields {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) 92px;
   gap: 8px;
@@ -265,7 +266,8 @@ label span {
   font-weight: 700;
 }
 
-input {
+input,
+select {
   width: 100%;
   min-height: 40px;
   border: 1px solid #cbd4db;
@@ -276,7 +278,8 @@ input {
   outline: none;
 }
 
-input:focus {
+input:focus,
+select:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(23, 107, 135, 0.16);
 }

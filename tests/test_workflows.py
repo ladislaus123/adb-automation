@@ -74,7 +74,10 @@ class WorkflowTests(unittest.TestCase):
                 business=True,
             )
 
-        ensure_device_ready.assert_called_once_with("192.168.10.21:5555")
+        ensure_device_ready.assert_called_once_with(
+            "192.168.10.21:5555",
+            adb_transport=devices.ADB_TRANSPORT_WIFI,
+        )
         wake_and_unlock_device.assert_called_once_with("192.168.10.21:5555")
         send_whatsapp.assert_called_once_with(
             "192.168.10.21:5555",
@@ -82,6 +85,45 @@ class WorkflowTests(unittest.TestCase):
             text="hello",
             file_path=None,
             business=True,
+            adb_transport=devices.ADB_TRANSPORT_WIFI,
+        )
+
+    def test_send_with_device_lease_uses_usb_transport_for_usb_device(self):
+        devices.add_device(
+            self.conn,
+            "phone-usb",
+            adb_transport=devices.ADB_TRANSPORT_USB,
+            usb_serial="R5CW123ABC",
+        )
+
+        with patch("builtins.print"), patch(
+            "adb_automation.workflows.ensure_device_ready"
+        ) as ensure_device_ready, patch(
+            "adb_automation.workflows.wake_and_unlock_device"
+        ), patch("adb_automation.workflows.mark_device_seen"), patch(
+            "adb_automation.workflows.send_whatsapp"
+        ) as send_whatsapp:
+            workflows.send_with_device_lease(
+                self.conn,
+                "phone-usb",
+                "5511999999999",
+                "hello",
+                None,
+                "worker-a",
+                600,
+            )
+
+        ensure_device_ready.assert_called_once_with(
+            "R5CW123ABC",
+            adb_transport=devices.ADB_TRANSPORT_USB,
+        )
+        send_whatsapp.assert_called_once_with(
+            "R5CW123ABC",
+            "5511999999999",
+            text="hello",
+            file_path=None,
+            business=False,
+            adb_transport=devices.ADB_TRANSPORT_USB,
         )
 
     def test_send_with_device_lease_releases_exact_acquired_lease(self):

@@ -515,6 +515,7 @@ def send_whatsapp(
     file_path=None,
     business=False,
     known_contact=None,
+    adb_transport="wifi",
 ):
     phone = normalize_phone(phone)
     if not text and not file_path:
@@ -549,6 +550,7 @@ def send_whatsapp(
                 text=text,
                 mime_type=mime_type,
                 known_contact=known_contact,
+                adb_transport=adb_transport,
             )
             print("[+] Transmission automated successfully!")
             return

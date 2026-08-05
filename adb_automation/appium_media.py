@@ -166,6 +166,10 @@ def run_best_effort_adb(command, serial, run_adb_command=run_adb):
         return None
 
 
+def is_wifi_transport(adb_transport):
+    return str(adb_transport or "wifi").strip().lower() == "wifi"
+
+
 def cleanup_staged_media(serial, remote_path, run_adb_command=run_adb):
     if not remote_path:
         return
@@ -420,7 +424,12 @@ def prepare_appium_session(
     sleep(APPIUM_PRE_SESSION_WAIT_SECONDS)
 
 
-def recover_appium_level_1(serial, run_adb_command=run_adb, sleep=time.sleep):
+def recover_appium_level_1(
+    serial,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    adb_transport="wifi",
+):
     print("[*] Appium recovery level 1: stopping UiAutomation consumers...")
     stop_u2_uiautomator(serial, run_adb_command=run_adb_command)
     stop_appium_uiautomator_server(serial, run_adb_command=run_adb_command)
@@ -433,7 +442,12 @@ def recover_appium_level_1(serial, run_adb_command=run_adb, sleep=time.sleep):
     sleep(appium_settle_seconds())
 
 
-def recover_appium_level_2(serial, run_adb_command=run_adb, sleep=time.sleep):
+def recover_appium_level_2(
+    serial,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    adb_transport="wifi",
+):
     print("[*] Appium recovery level 2: reinstalling UiAutomator2 server packages...")
     stop_u2_uiautomator(serial, run_adb_command=run_adb_command)
     stop_appium_uiautomator_server(serial, run_adb_command=run_adb_command)
@@ -452,27 +466,39 @@ def recover_appium_level_2(serial, run_adb_command=run_adb, sleep=time.sleep):
     sleep(appium_settle_seconds())
 
 
-def recover_appium_level_3(serial, run_adb_command=run_adb, sleep=time.sleep):
+def recover_appium_level_3(
+    serial,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    adb_transport="wifi",
+):
     print(f"[*] Appium recovery level 3: reconnecting ADB transport for {serial}...")
     run_best_effort_adb(["reconnect"], serial, run_adb_command=run_adb_command)
     sleep(appium_settle_seconds())
-    try:
-        connect_wifi_device(serial)
-    except AutomationError as exc:
-        print(f"[WARN] Could not re-establish Wi-Fi ADB connection: {exc}")
+    if is_wifi_transport(adb_transport):
+        try:
+            connect_wifi_device(serial)
+        except AutomationError as exc:
+            print(f"[WARN] Could not re-establish Wi-Fi ADB connection: {exc}")
     sleep(appium_settle_seconds())
 
 
-def recover_appium_level_4(serial, run_adb_command=run_adb, sleep=time.sleep):
+def recover_appium_level_4(
+    serial,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    adb_transport="wifi",
+):
     print(f"[*] Appium recovery level 4: rebooting {serial} (last resort)...")
     run_best_effort_adb(["reboot"], serial, run_adb_command=run_adb_command)
     attempts = APPIUM_REBOOT_WAIT_SECONDS // APPIUM_REBOOT_POLL_SECONDS
     for _ in range(attempts):
         sleep(APPIUM_REBOOT_POLL_SECONDS)
-        try:
-            connect_wifi_device(serial)
-        except AutomationError:
-            continue
+        if is_wifi_transport(adb_transport):
+            try:
+                connect_wifi_device(serial)
+            except AutomationError:
+                continue
         boot_completed = run_best_effort_adb(
             ["shell", "getprop", "sys.boot_completed"],
             serial,
@@ -508,6 +534,7 @@ def start_appium_driver_with_recovery(
     run_adb_command=run_adb,
     driver_factory=start_appium_driver,
     sleep=time.sleep,
+    adb_transport="wifi",
 ):
     prepare_appium_session(
         serial,
@@ -521,7 +548,12 @@ def start_appium_driver_with_recovery(
                 "[WARN] Appium UiAutomation startup failed; "
                 f"running {recover.__name__}: {last_error}"
             )
-            recover(serial, run_adb_command=run_adb_command, sleep=sleep)
+            recover(
+                serial,
+                run_adb_command=run_adb_command,
+                sleep=sleep,
+                adb_transport=adb_transport,
+            )
         try:
             return driver_factory(serial, server_url)
         except AutomationError as exc:
@@ -869,6 +901,7 @@ def send_media_with_appium(
     driver_factory=start_appium_driver,
     sleep=time.sleep,
     known_contact=None,
+    adb_transport="wifi",
 ):
     from .chat_navigation import open_chat_via_ui
 
@@ -900,6 +933,7 @@ def send_media_with_appium(
         driver = start_appium_driver_with_recovery(
             serial,
             appium_server or appium_server_url(),
+            adb_transport=adb_transport,
             run_adb_command=run_adb_command,
             driver_factory=driver_factory,
             sleep=sleep,

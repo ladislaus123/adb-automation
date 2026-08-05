@@ -94,6 +94,10 @@ class FakeCursor:
             self.result = self._find_by_endpoint(params[0], params[1])
             return
 
+        if normalized.startswith("select * from devices where usb_serial"):
+            self.result = self._find_by_usb_serial(params[0])
+            return
+
         if normalized.startswith("select * from devices order by id asc"):
             self.result = [copy.deepcopy(device) for device in self.conn.devices]
             return
@@ -136,6 +140,17 @@ class FakeCursor:
         if normalized.startswith("create table"):
             return
 
+        if normalized.startswith("show columns from devices like"):
+            self.result = self._device_column(params[0])
+            return
+
+        if normalized.startswith("show index from devices where key_name"):
+            self.result = self._device_index(params[0])
+            return
+
+        if normalized.startswith("alter table devices"):
+            return
+
         raise AssertionError(f"unexpected query: {query}")
 
     def fetchone(self):
@@ -156,11 +171,23 @@ class FakeCursor:
         self.closed = True
 
     def _insert_device(self, params):
-        name, ip, port, created_at, updated_at = params
+        if len(params) == 5:
+            name, ip, port, created_at, updated_at = params
+            adb_transport = "wifi"
+            usb_serial = None
+        else:
+            name, ip, port, adb_transport, usb_serial, created_at, updated_at = params
         for device in self.conn.devices:
-            if device["name"] == name or (
-                device["ip"] == ip and device["port"] == port
-            ):
+            endpoint_duplicate = (
+                ip is not None
+                and port is not None
+                and device["ip"] == ip
+                and device["port"] == port
+            )
+            usb_duplicate = (
+                usb_serial is not None and device.get("usb_serial") == usb_serial
+            )
+            if device["name"] == name or endpoint_duplicate or usb_duplicate:
                 raise mysql.connector.IntegrityError("duplicate device")
 
         device = {
@@ -168,6 +195,8 @@ class FakeCursor:
             "name": name,
             "ip": ip,
             "port": port,
+            "adb_transport": adb_transport,
+            "usb_serial": usb_serial,
             "worker_id": None,
             "locked_until": None,
             "last_seen_at": None,
@@ -274,6 +303,12 @@ class FakeCursor:
                 return copy.deepcopy(device)
         return None
 
+    def _find_by_usb_serial(self, usb_serial):
+        for device in self.conn.devices:
+            if device.get("usb_serial") == usb_serial:
+                return copy.deepcopy(device)
+        return None
+
     def _lease_device(self, params):
         worker_id, locked_until, updated_at, device_id = params
         device = self._device_ref(device_id)
@@ -303,12 +338,41 @@ class FakeCursor:
         device["updated_at"] = updated_at
 
     def _update_device(self, params):
-        name, ip, port, updated_at, device_id = params
+        if len(params) == 5:
+            name, ip, port, updated_at, device_id = params
+            adb_transport = "wifi"
+            usb_serial = None
+        else:
+            name, ip, port, adb_transport, usb_serial, updated_at, device_id = params
         device = self._device_ref(device_id)
         device["name"] = name
         device["ip"] = ip
         device["port"] = port
+        device["adb_transport"] = adb_transport
+        device["usb_serial"] = usb_serial
         device["updated_at"] = updated_at
+
+    def _device_column(self, column):
+        columns = {
+            "id": ("id", "bigint unsigned", "NO"),
+            "name": ("name", "varchar(255)", "NO"),
+            "ip": ("ip", "varchar(255)", "YES"),
+            "port": ("port", "int", "YES"),
+            "adb_transport": ("adb_transport", "varchar(16)", "NO"),
+            "usb_serial": ("usb_serial", "varchar(255)", "YES"),
+        }
+        return columns.get(column)
+
+    def _device_index(self, index_name):
+        indexes = {
+            "uq_devices_name",
+            "uq_devices_endpoint",
+            "uq_devices_usb_serial",
+            "idx_devices_locked_until",
+        }
+        if index_name in indexes:
+            return {"Key_name": index_name}
+        return None
 
     def _claim_job(self, params):
         status, queue_worker_id, device_locked_until, started_at, updated_at, job_id = params

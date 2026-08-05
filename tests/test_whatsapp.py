@@ -536,6 +536,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             text="caption",
             mime_type="audio/mpeg",
             known_contact=None,
+            adb_transport="wifi",
         )
         click_send_button.assert_not_called()
         self.assertEqual(
@@ -570,6 +571,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             text="caption",
             mime_type="image/jpeg",
             known_contact=None,
+            adb_transport="wifi",
         )
         click_send_button.assert_not_called()
         self.assertEqual(
@@ -611,6 +613,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             text=None,
             mime_type="video/mp4",
             known_contact=None,
+            adb_transport="wifi",
         )
         click_send_button.assert_not_called()
 

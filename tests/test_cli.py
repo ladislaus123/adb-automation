@@ -30,7 +30,56 @@ class CliTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        add_device.assert_called_once_with(conn, "phone-01", "192.168.10.21", 5555)
+        add_device.assert_called_once_with(
+            conn,
+            "phone-01",
+            "192.168.10.21",
+            5555,
+            adb_transport="wifi",
+            usb_serial=None,
+        )
+        conn.close.assert_called_once()
+
+    def test_devices_add_routes_usb_device_to_device_repo(self):
+        conn = Mock()
+        device = {
+            "id": 1,
+            "name": "phone-usb",
+            "adb_transport": "usb",
+            "ip": None,
+            "port": None,
+            "usb_serial": "R5CW123ABC",
+        }
+
+        with patch("builtins.print"), patch(
+            "adb_automation.cli.open_database", return_value=conn
+        ), patch("adb_automation.cli.init_database"), patch(
+            "adb_automation.cli.add_device", return_value=device
+        ) as add_device:
+            result = cli.main(
+                [
+                    "--database",
+                    ":memory:",
+                    "devices",
+                    "add",
+                    "--name",
+                    "phone-usb",
+                    "--adb-transport",
+                    "usb",
+                    "--usb-serial",
+                    "R5CW123ABC",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        add_device.assert_called_once_with(
+            conn,
+            "phone-usb",
+            None,
+            None,
+            adb_transport="usb",
+            usb_serial="R5CW123ABC",
+        )
         conn.close.assert_called_once()
 
     def test_devices_list_routes_to_device_repo(self):

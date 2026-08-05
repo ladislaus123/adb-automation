@@ -50,6 +50,44 @@ class AdbCommandTests(unittest.TestCase):
             ["pair", "192.168.10.21:37123", "123456"]
         )
 
+    def test_ensure_wifi_device_ready_connects_then_checks_visibility(self):
+        with patch("adb_automation.adb.connect_wifi_device") as connect_wifi_device, patch(
+            "adb_automation.adb.get_connected_device_states",
+            return_value={"192.168.10.21:5555": "device"},
+        ):
+            adb.ensure_device_ready("192.168.10.21:5555")
+
+        connect_wifi_device.assert_called_once_with("192.168.10.21:5555")
+
+    def test_ensure_usb_device_ready_only_checks_visibility(self):
+        with patch("adb_automation.adb.connect_wifi_device") as connect_wifi_device, patch(
+            "adb_automation.adb.get_connected_device_states",
+            return_value={"R5CW123ABC": "device"},
+        ):
+            adb.ensure_device_ready("R5CW123ABC", adb_transport="usb")
+
+        connect_wifi_device.assert_not_called()
+
+    def test_ensure_usb_device_ready_reports_bad_states(self):
+        scenarios = (
+            ("unauthorized", "Check authorization"),
+            ("offline", "is offline"),
+            (None, "not visible"),
+        )
+
+        for state, expected in scenarios:
+            with self.subTest(state=state), patch(
+                "adb_automation.adb.connect_wifi_device"
+            ) as connect_wifi_device, patch(
+                "adb_automation.adb.get_connected_device_states",
+                return_value={}
+                if state is None
+                else {"R5CW123ABC": state},
+            ):
+                with self.assertRaisesRegex(adb.AdbError, expected):
+                    adb.ensure_device_ready("R5CW123ABC", adb_transport="usb")
+                connect_wifi_device.assert_not_called()
+
     def test_wake_and_unlock_wakes_off_screen_and_swipes(self):
         commands = []
 

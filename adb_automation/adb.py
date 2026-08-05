@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 
+from .devices import ADB_TRANSPORT_USB, ADB_TRANSPORT_WIFI, normalize_adb_transport
 from .errors import AdbError
 
 SCREEN_OFF_PATTERNS = (
@@ -109,6 +110,19 @@ def pair_wifi_device(ip, port, pairing_code):
     return output
 
 
+def require_visible_device(serial):
+    states = get_connected_device_states()
+    state = states.get(serial)
+    if state == "device":
+        return states
+
+    if state:
+        raise AdbError(
+            f"device {serial} is {state}. Check authorization on the phone."
+        )
+    raise AdbError(f"device {serial} is not visible in adb devices.")
+
+
 def _matches_any(output, patterns):
     output = output or ""
     return any(pattern.search(output) for pattern in patterns)
@@ -210,15 +224,11 @@ def wake_and_unlock_device(serial, run_adb_command=run_adb, sleep=time.sleep):
         sleep(UNLOCK_SETTLE_SECONDS)
 
 
-def ensure_device_ready(serial):
-    connect_wifi_device(serial)
-    states = get_connected_device_states()
-    state = states.get(serial)
-    if state == "device":
-        return
+def ensure_device_ready(serial, adb_transport=ADB_TRANSPORT_WIFI):
+    transport = normalize_adb_transport(adb_transport)
+    if transport == ADB_TRANSPORT_WIFI:
+        connect_wifi_device(serial)
+    elif transport != ADB_TRANSPORT_USB:
+        raise AdbError(f"unsupported adb transport: {adb_transport}")
 
-    if state:
-        raise AdbError(
-            f"device {serial} is {state}. Check authorization on the phone."
-        )
-    raise AdbError(f"device {serial} is not visible in adb devices.")
+    require_visible_device(serial)

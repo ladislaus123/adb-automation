@@ -18,11 +18,32 @@ class DeviceDatabaseTests(unittest.TestCase):
         self.assertEqual(device["name"], "phone-01")
         self.assertEqual(device["ip"], "192.168.10.21")
         self.assertEqual(device["port"], 5555)
+        self.assertEqual(device["adb_transport"], devices.ADB_TRANSPORT_WIFI)
+        self.assertIsNone(device["usb_serial"])
         self.assertEqual(
             devices.find_device(self.conn, "phone-01")["id"], device["id"]
         )
         self.assertEqual(
             devices.find_device(self.conn, str(device["id"]))["name"], "phone-01"
+        )
+
+    def test_usb_device_crud(self):
+        device = devices.add_device(
+            self.conn,
+            "phone-usb",
+            adb_transport=devices.ADB_TRANSPORT_USB,
+            usb_serial="R5CW123ABC",
+        )
+
+        self.assertEqual(device["name"], "phone-usb")
+        self.assertEqual(device["adb_transport"], devices.ADB_TRANSPORT_USB)
+        self.assertIsNone(device["ip"])
+        self.assertIsNone(device["port"])
+        self.assertEqual(device["usb_serial"], "R5CW123ABC")
+        self.assertEqual(devices.device_serial(device), "R5CW123ABC")
+        self.assertEqual(
+            devices.find_device_by_usb_serial(self.conn, "R5CW123ABC")["id"],
+            device["id"],
         )
 
     def test_active_lock_blocks_other_workers(self):
@@ -103,6 +124,22 @@ class DeviceDatabaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             devices.add_device(self.conn, "phone-01", "192.168.10.22", 5555)
 
+    def test_duplicate_usb_serial_is_rejected(self):
+        devices.add_device(
+            self.conn,
+            "phone-usb-1",
+            adb_transport=devices.ADB_TRANSPORT_USB,
+            usb_serial="R5CW123ABC",
+        )
+
+        with self.assertRaises(ValueError):
+            devices.add_device(
+                self.conn,
+                "phone-usb-2",
+                adb_transport=devices.ADB_TRANSPORT_USB,
+                usb_serial="R5CW123ABC",
+            )
+
     def test_update_device_changes_name_ip_and_port(self):
         device = devices.add_device(self.conn, "phone-01", "192.168.10.21", 5555)
 
@@ -117,7 +154,38 @@ class DeviceDatabaseTests(unittest.TestCase):
         self.assertEqual(updated["name"], "phone-main")
         self.assertEqual(updated["ip"], "192.168.10.22")
         self.assertEqual(updated["port"], 45678)
+        self.assertEqual(updated["adb_transport"], devices.ADB_TRANSPORT_WIFI)
+        self.assertIsNone(updated["usb_serial"])
         self.assertEqual(devices.device_serial(updated), "192.168.10.22:45678")
+
+    def test_update_device_switches_between_transports(self):
+        device = devices.add_device(self.conn, "phone-01", "192.168.10.21", 5555)
+
+        updated = devices.update_device(
+            self.conn,
+            device["id"],
+            adb_transport=devices.ADB_TRANSPORT_USB,
+            usb_serial="R5CW123ABC",
+        )
+
+        self.assertEqual(updated["adb_transport"], devices.ADB_TRANSPORT_USB)
+        self.assertIsNone(updated["ip"])
+        self.assertIsNone(updated["port"])
+        self.assertEqual(updated["usb_serial"], "R5CW123ABC")
+        self.assertEqual(devices.device_serial(updated), "R5CW123ABC")
+
+        updated = devices.update_device(
+            self.conn,
+            device["id"],
+            adb_transport=devices.ADB_TRANSPORT_WIFI,
+            ip="192.168.10.22",
+            port=45678,
+        )
+
+        self.assertEqual(updated["adb_transport"], devices.ADB_TRANSPORT_WIFI)
+        self.assertEqual(updated["ip"], "192.168.10.22")
+        self.assertEqual(updated["port"], 45678)
+        self.assertIsNone(updated["usb_serial"])
 
     def test_update_device_allows_same_name_and_endpoint(self):
         device = devices.add_device(self.conn, "phone-01", "192.168.10.21", 5555)

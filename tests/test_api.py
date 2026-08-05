@@ -486,6 +486,7 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(payload["success"])
         self.assertEqual(payload["devices"][0]["name"], "phone-01")
+        self.assertEqual(payload["devices"][0]["adb_transport"], "wifi")
         self.assertEqual(payload["devices"][0]["serial"], "192.168.10.21:5555")
         self.assertEqual(payload["devices"][0]["adb_state"], "device")
         self.assertTrue(payload["devices"][0]["connected"])
@@ -510,8 +511,41 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertTrue(payload["success"])
         self.assertEqual(payload["device"]["name"], "phone-01")
+        self.assertEqual(payload["device"]["adb_transport"], "wifi")
         self.assertEqual(payload["device"]["adb_state"], "disconnected")
         self.assertEqual(conn.devices[0]["ip"], "192.168.10.21")
+        self.assertTrue(conn.closed)
+
+    def test_add_usb_device_route_saves_device(self):
+        conn = FakeMariaDBConnection()
+
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"), patch(
+            "adb_automation.api.get_connected_device_states",
+            return_value={"R5CW123ABC": "device"},
+        ):
+            response = self.post_json(
+                "/api/devices",
+                {
+                    "name": "phone-usb",
+                    "adb_transport": "usb",
+                    "usb_serial": "R5CW123ABC",
+                },
+                headers=self.auth_headers(),
+            )
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["device"]["name"], "phone-usb")
+        self.assertEqual(payload["device"]["adb_transport"], "usb")
+        self.assertIsNone(payload["device"]["ip"])
+        self.assertIsNone(payload["device"]["port"])
+        self.assertEqual(payload["device"]["usb_serial"], "R5CW123ABC")
+        self.assertEqual(payload["device"]["serial"], "R5CW123ABC")
+        self.assertTrue(payload["device"]["connected"])
+        self.assertEqual(conn.devices[0]["usb_serial"], "R5CW123ABC")
         self.assertTrue(conn.closed)
 
     def test_update_device_route_requires_auth(self):
@@ -543,11 +577,41 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(payload["success"])
         self.assertEqual(payload["device"]["name"], "phone-main")
+        self.assertEqual(payload["device"]["adb_transport"], "wifi")
         self.assertEqual(payload["device"]["ip"], "192.168.10.22")
         self.assertEqual(payload["device"]["port"], 45678)
         self.assertEqual(payload["device"]["serial"], "192.168.10.22:45678")
         self.assertTrue(payload["device"]["connected"])
         self.assertEqual(conn.devices[0]["name"], "phone-main")
+        self.assertTrue(conn.closed)
+
+    def test_update_device_route_switches_to_usb(self):
+        conn = FakeMariaDBConnection()
+        device = devices.add_device(conn, "phone-01", "192.168.10.21", 5555)
+
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"), patch(
+            "adb_automation.api.get_connected_device_states",
+            return_value={"R5CW123ABC": "device"},
+        ):
+            response = self.client.put(
+                f"/api/devices/{device['id']}",
+                json={
+                    "adb_transport": "usb",
+                    "usb_serial": "R5CW123ABC",
+                },
+                headers=self.auth_headers(),
+            )
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["device"]["adb_transport"], "usb")
+        self.assertIsNone(payload["device"]["ip"])
+        self.assertIsNone(payload["device"]["port"])
+        self.assertEqual(payload["device"]["serial"], "R5CW123ABC")
+        self.assertTrue(payload["device"]["connected"])
         self.assertTrue(conn.closed)
 
     def test_update_device_route_returns_not_found(self):
@@ -641,6 +705,46 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["adb_output"], f"connected to {serial}")
         self.assertIsNotNone(conn.devices[0]["last_seen_at"])
         connect_wifi_device.assert_called_once_with(serial)
+        self.assertTrue(conn.closed)
+
+    def test_connect_usb_device_route_checks_visibility_and_marks_seen(self):
+        conn = FakeMariaDBConnection()
+        device = devices.add_device(
+            conn,
+            "phone-usb",
+            adb_transport=devices.ADB_TRANSPORT_USB,
+            usb_serial="R5CW123ABC",
+        )
+
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"), patch(
+            "adb_automation.api.ensure_device_ready"
+        ) as ensure_device_ready, patch(
+            "adb_automation.api.connect_wifi_device"
+        ) as connect_wifi_device, patch(
+            "adb_automation.api.get_connected_device_states",
+            return_value={"R5CW123ABC": "device"},
+        ):
+            response = self.post_json(
+                f"/api/devices/{device['id']}/connect",
+                {},
+                headers=self.auth_headers(),
+            )
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["device"]["connected"])
+        self.assertEqual(
+            payload["adb_output"],
+            "USB device R5CW123ABC is visible in adb devices.",
+        )
+        self.assertIsNotNone(conn.devices[0]["last_seen_at"])
+        ensure_device_ready.assert_called_once_with(
+            "R5CW123ABC",
+            adb_transport=devices.ADB_TRANSPORT_USB,
+        )
+        connect_wifi_device.assert_not_called()
         self.assertTrue(conn.closed)
 
     def test_connect_device_route_returns_adb_error(self):

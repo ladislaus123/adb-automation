@@ -21,6 +21,8 @@ from .config import (
 )
 from .db import init_database, open_database
 from .devices import (
+    ADB_TRANSPORTS,
+    ADB_TRANSPORT_WIFI,
     add_device,
     device_serial,
     format_devices_table,
@@ -95,10 +97,17 @@ def build_parser():
     devices_parser = subparsers.add_parser("devices", help="manage device records")
     device_subparsers = devices_parser.add_subparsers(dest="devices_command")
 
-    add_parser = device_subparsers.add_parser("add", help="add a Wi-Fi ADB device")
+    add_parser = device_subparsers.add_parser("add", help="add an ADB device")
     add_parser.add_argument("--name", required=True, help="stable device name")
-    add_parser.add_argument("--ip", required=True, help="device Wi-Fi IP")
-    add_parser.add_argument("--port", required=True, type=int, help="device ADB port")
+    add_parser.add_argument(
+        "--adb-transport",
+        choices=ADB_TRANSPORTS,
+        default=ADB_TRANSPORT_WIFI,
+        help="ADB transport to use for this device",
+    )
+    add_parser.add_argument("--ip", help="device Wi-Fi IP")
+    add_parser.add_argument("--port", type=int, help="device Wi-Fi ADB port")
+    add_parser.add_argument("--usb-serial", help="USB serial from adb devices")
 
     device_subparsers.add_parser("list", help="list known devices")
 
@@ -110,7 +119,14 @@ def build_parser():
 
 def handle_devices_command(conn, args):
     if args.devices_command == "add":
-        device = add_device(conn, args.name, args.ip, args.port)
+        device = add_device(
+            conn,
+            args.name,
+            args.ip,
+            args.port,
+            adb_transport=args.adb_transport,
+            usb_serial=args.usb_serial,
+        )
         print(
             f"[+] Added device {device['id']} {device['name']} "
             f"({device_serial(device)})."

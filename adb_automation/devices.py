@@ -7,6 +7,10 @@ import mysql.connector
 from .config import parse_positive_int
 from .errors import DeviceLockError
 
+ADB_TRANSPORT_WIFI = "wifi"
+ADB_TRANSPORT_USB = "usb"
+ADB_TRANSPORTS = (ADB_TRANSPORT_WIFI, ADB_TRANSPORT_USB)
+
 
 def utcnow():
     return datetime.now(timezone.utc)
@@ -26,7 +30,24 @@ def normalize_worker_id(worker_id=None):
     return f"{socket.gethostname()}-{os.getpid()}"
 
 
+def normalize_adb_transport(adb_transport=None):
+    if adb_transport is None:
+        return ADB_TRANSPORT_WIFI
+    if not isinstance(adb_transport, str):
+        raise ValueError("adb_transport must be wifi or usb.")
+    transport = adb_transport.strip().lower()
+    if transport not in ADB_TRANSPORTS:
+        raise ValueError("adb_transport must be wifi or usb.")
+    return transport
+
+
+def device_adb_transport(device):
+    return normalize_adb_transport(device.get("adb_transport") or ADB_TRANSPORT_WIFI)
+
+
 def device_serial(device):
+    if device_adb_transport(device) == ADB_TRANSPORT_USB:
+        return device["usb_serial"]
     return f"{device['ip']}:{device['port']}"
 
 
@@ -58,50 +79,78 @@ def execute_write(conn, query, params=()):
     return lastrowid
 
 
-def add_device(conn, name, ip, port):
-    name = (name or "").strip()
-    ip = (ip or "").strip()
-    port = parse_positive_int(port, "port")
-    if port > 65535:
-        raise ValueError("port must be between 1 and 65535.")
-    if not name:
-        raise ValueError("device name is required.")
-    if not ip:
-        raise ValueError("device IP is required.")
-
+def add_device(
+    conn,
+    name,
+    ip=None,
+    port=None,
+    adb_transport=ADB_TRANSPORT_WIFI,
+    usb_serial=None,
+):
+    name, ip, port, adb_transport, usb_serial = validate_device_fields(
+        name,
+        ip,
+        port,
+        adb_transport,
+        usb_serial,
+    )
     timestamp = now_iso()
     try:
         device_id = execute_write(
             conn,
             """
-            INSERT INTO devices (name, ip, port, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO devices (
+                name, ip, port, adb_transport, usb_serial, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
-            (name, ip, port, timestamp, timestamp),
+            (name, ip, port, adb_transport, usb_serial, timestamp, timestamp),
         )
         conn.commit()
     except mysql.connector.IntegrityError as exc:
         conn.rollback()
         raise ValueError(
-            "device name or IP/port already exists in the database."
+            "device name, IP/port, or USB serial already exists in the database."
         ) from exc
     return get_device_by_id(conn, device_id)
 
 
-def validate_device_fields(name, ip, port):
+def validate_device_fields(
+    name,
+    ip=None,
+    port=None,
+    adb_transport=ADB_TRANSPORT_WIFI,
+    usb_serial=None,
+):
     name = (name or "").strip()
+    if not name:
+        raise ValueError("device name is required.")
+
+    adb_transport = normalize_adb_transport(adb_transport)
+    if adb_transport == ADB_TRANSPORT_USB:
+        usb_serial = (usb_serial or "").strip()
+        if not usb_serial:
+            raise ValueError("usb_serial is required for USB devices.")
+        return name, None, None, adb_transport, usb_serial
+
     ip = (ip or "").strip()
     port = parse_positive_int(port, "port")
     if port > 65535:
         raise ValueError("port must be between 1 and 65535.")
-    if not name:
-        raise ValueError("device name is required.")
     if not ip:
         raise ValueError("device IP is required.")
-    return name, ip, port
+    return name, ip, port, adb_transport, None
 
 
-def update_device(conn, device_id, name=None, ip=None, port=None):
+def update_device(
+    conn,
+    device_id,
+    name=None,
+    ip=None,
+    port=None,
+    adb_transport=None,
+    usb_serial=None,
+):
     conn.start_transaction()
     try:
         device = get_device_by_id(conn, device_id, for_update=True)
@@ -115,35 +164,72 @@ def update_device(conn, device_id, name=None, ip=None, port=None):
                 f"until {device['locked_until']}."
             )
 
-        next_name, next_ip, next_port = validate_device_fields(
-            device["name"] if name is None else name,
-            device["ip"] if ip is None else ip,
-            device["port"] if port is None else port,
+        next_transport = normalize_adb_transport(
+            device.get("adb_transport") if adb_transport is None else adb_transport
+        )
+        next_name = device["name"] if name is None else name
+        if next_transport == ADB_TRANSPORT_USB:
+            next_ip = None
+            next_port = None
+            next_usb_serial = (
+                device.get("usb_serial") if usb_serial is None else usb_serial
+            )
+        else:
+            next_ip = device.get("ip") if ip is None else ip
+            next_port = device.get("port") if port is None else port
+            next_usb_serial = None
+
+        (
+            next_name,
+            next_ip,
+            next_port,
+            next_transport,
+            next_usb_serial,
+        ) = validate_device_fields(
+            next_name,
+            next_ip,
+            next_port,
+            next_transport,
+            next_usb_serial,
         )
 
         duplicate_name = find_device_by_name(conn, next_name)
         if duplicate_name and duplicate_name["id"] != device["id"]:
             raise ValueError("device name already exists.")
 
-        duplicate_endpoint = find_device_by_endpoint(conn, next_ip, next_port)
-        if duplicate_endpoint and duplicate_endpoint["id"] != device["id"]:
-            raise ValueError("device IP/port already exists.")
+        if next_transport == ADB_TRANSPORT_USB:
+            duplicate_usb = find_device_by_usb_serial(conn, next_usb_serial)
+            if duplicate_usb and duplicate_usb["id"] != device["id"]:
+                raise ValueError("device USB serial already exists.")
+        else:
+            duplicate_endpoint = find_device_by_endpoint(conn, next_ip, next_port)
+            if duplicate_endpoint and duplicate_endpoint["id"] != device["id"]:
+                raise ValueError("device IP/port already exists.")
 
         timestamp = now_iso()
         execute_write(
             conn,
             """
             UPDATE devices
-            SET name = %s, ip = %s, port = %s, updated_at = %s
+            SET name = %s, ip = %s, port = %s,
+                adb_transport = %s, usb_serial = %s, updated_at = %s
             WHERE id = %s
             """,
-            (next_name, next_ip, next_port, timestamp, device["id"]),
+            (
+                next_name,
+                next_ip,
+                next_port,
+                next_transport,
+                next_usb_serial,
+                timestamp,
+                device["id"],
+            ),
         )
         conn.commit()
     except mysql.connector.IntegrityError as exc:
         conn.rollback()
         raise ValueError(
-            "device name or IP/port already exists in the database."
+            "device name, IP/port, or USB serial already exists in the database."
         ) from exc
     except Exception:
         conn.rollback()
@@ -189,6 +275,17 @@ def find_device_by_endpoint(conn, ip, port):
         raise ValueError("device IP is required.")
     return fetch_one(
         conn, "SELECT * FROM devices WHERE ip = %s AND port = %s", (ip, port)
+    )
+
+
+def find_device_by_usb_serial(conn, usb_serial):
+    usb_serial = (usb_serial or "").strip()
+    if not usb_serial:
+        raise ValueError("usb_serial is required.")
+    return fetch_one(
+        conn,
+        "SELECT * FROM devices WHERE usb_serial = %s",
+        (usb_serial,),
     )
 
 
@@ -282,11 +379,12 @@ def mark_device_seen(conn, device_id):
 
 
 def format_devices_table(devices):
-    headers = ("ID", "Name", "Endpoint", "Status", "Worker", "Last seen")
+    headers = ("ID", "Name", "Transport", "Serial", "Status", "Worker", "Last seen")
     rows = []
     current = now_iso()
     for device in devices:
-        endpoint = device_serial(device)
+        transport = device_adb_transport(device)
+        serial = device_serial(device)
         if lock_is_active(device, current):
             status = f"locked until {device['locked_until']}"
         else:
@@ -295,7 +393,8 @@ def format_devices_table(devices):
             (
                 str(device["id"]),
                 device["name"],
-                endpoint,
+                transport,
+                serial,
                 status,
                 device["worker_id"] or "-",
                 device["last_seen_at"] or "-",

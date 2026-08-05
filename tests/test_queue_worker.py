@@ -50,7 +50,10 @@ class QueueWorkerTests(unittest.TestCase):
             processed = queue_worker.run_queue_once(self.conn, "queue-worker-1")
 
         self.assertTrue(processed)
-        ensure_device_ready.assert_called_once_with("192.168.10.21:5555")
+        ensure_device_ready.assert_called_once_with(
+            "192.168.10.21:5555",
+            adb_transport=devices.ADB_TRANSPORT_WIFI,
+        )
         wake_and_unlock_device.assert_called_once_with("192.168.10.21:5555")
         mark_device_seen.assert_called_once_with(self.conn, self.device["id"])
         send_whatsapp.assert_called_once_with(
@@ -60,6 +63,7 @@ class QueueWorkerTests(unittest.TestCase):
             file_path=None,
             business=True,
             known_contact=False,
+            adb_transport=devices.ADB_TRANSPORT_WIFI,
         )
         self.assertEqual(
             send_queue.get_send_job(self.conn, job["id"])["status"],
@@ -68,6 +72,54 @@ class QueueWorkerTests(unittest.TestCase):
         released = devices.find_device(self.conn, "phone-01")
         self.assertIsNone(released["worker_id"])
         self.assertIsNone(released["locked_until"])
+
+    def test_run_queue_once_uses_usb_transport_for_usb_device(self):
+        usb_device = devices.add_device(
+            self.conn,
+            "phone-usb",
+            adb_transport=devices.ADB_TRANSPORT_USB,
+            usb_serial="R5CW123ABC",
+        )
+        job = send_queue.enqueue_send_job(
+            self.conn,
+            "/api/sendText",
+            usb_device,
+            "phone-usb",
+            "5511999999999",
+            "hello",
+            None,
+            False,
+            "api-worker",
+            600,
+        )
+
+        with patch("builtins.print"), patch(
+            "adb_automation.queue_worker.ensure_device_ready"
+        ) as ensure_device_ready, patch(
+            "adb_automation.queue_worker.wake_and_unlock_device"
+        ), patch("adb_automation.queue_worker.mark_device_seen"), patch(
+            "adb_automation.queue_worker.send_whatsapp"
+        ) as send_whatsapp:
+            processed = queue_worker.run_queue_once(self.conn, "queue-worker-1")
+
+        self.assertTrue(processed)
+        ensure_device_ready.assert_called_once_with(
+            "R5CW123ABC",
+            adb_transport=devices.ADB_TRANSPORT_USB,
+        )
+        send_whatsapp.assert_called_once_with(
+            "R5CW123ABC",
+            "5511999999999",
+            text="hello",
+            file_path=None,
+            business=False,
+            known_contact=False,
+            adb_transport=devices.ADB_TRANSPORT_USB,
+        )
+        self.assertEqual(
+            send_queue.get_send_job(self.conn, job["id"])["status"],
+            send_queue.JOB_STATUS_SUCCEEDED,
+        )
 
     def test_voice_job_passes_original_audio_through_media_route(self):
         with tempfile.NamedTemporaryFile(suffix=".mp3") as media_file:
@@ -93,6 +145,7 @@ class QueueWorkerTests(unittest.TestCase):
             file_path=media_file.name,
             business=True,
             known_contact=False,
+            adb_transport=devices.ADB_TRANSPORT_WIFI,
         )
 
     def test_worker_cleans_downloaded_media_file_after_success(self):
@@ -186,7 +239,10 @@ class QueueWorkerTests(unittest.TestCase):
             processed = queue_worker.run_queue_once(self.conn, "queue-worker-1")
 
         self.assertTrue(processed)
-        ensure_device_ready.assert_called_once_with("192.168.10.21:5555")
+        ensure_device_ready.assert_called_once_with(
+            "192.168.10.21:5555",
+            adb_transport=devices.ADB_TRANSPORT_WIFI,
+        )
         wake_and_unlock_device.assert_called_once_with("192.168.10.21:5555")
         mark_device_seen.assert_called_once_with(self.conn, self.device["id"])
         run_stochastic_actions.assert_called_once_with("192.168.10.21:5555")

@@ -33,7 +33,8 @@
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Endpoint</th>
+                <th>Transport</th>
+                <th>Serial / Endpoint</th>
                 <th>ADB</th>
                 <th>Lease</th>
                 <th>Last seen</th>
@@ -42,7 +43,7 @@
             </thead>
             <tbody id="devicesBody">
               <tr>
-                <td colspan="6" class="empty-cell">No devices loaded</td>
+                <td colspan="7" class="empty-cell">No devices loaded</td>
               </tr>
             </tbody>
           </table>
@@ -106,7 +107,14 @@
               <span>Name</span>
               <input name="name" type="text" autocomplete="off" required>
             </label>
-            <div class="split-fields">
+            <label>
+              <span>Transport</span>
+              <select id="deviceTransportInput" name="adb_transport">
+                <option value="wifi">Wi-Fi</option>
+                <option value="usb">USB</option>
+              </select>
+            </label>
+            <div id="wifiDeviceFields" class="split-fields">
               <label>
                 <span>IP</span>
                 <input name="ip" type="text" autocomplete="off" required>
@@ -116,6 +124,10 @@
                 <input name="port" type="number" min="1" max="65535" inputmode="numeric" required>
               </label>
             </div>
+            <label id="usbDeviceFields" hidden>
+              <span>USB serial</span>
+              <input name="usb_serial" type="text" autocomplete="off" disabled>
+            </label>
             <button class="button primary" type="submit">Save Device</button>
           </form>
         </section>

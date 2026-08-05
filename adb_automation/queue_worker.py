@@ -16,6 +16,7 @@ from .config import (
 )
 from .db import init_database, open_database
 from .devices import (
+    device_adb_transport,
     device_serial,
     mark_device_seen,
     normalize_worker_id,
@@ -135,11 +136,12 @@ def determine_known_contact(conn, job):
 def process_claimed_job(conn, job):
     device = job["device"]
     serial = device_serial(device)
+    adb_transport = device_adb_transport(device)
     file_path = job["file_path"]
     known_contact = determine_known_contact(conn, job)
 
     try:
-        ensure_device_ready(serial)
+        ensure_device_ready(serial, adb_transport=adb_transport)
         wake_and_unlock_device(serial)
         mark_device_seen(conn, device["id"])
         if is_stochastic_job(job):
@@ -152,6 +154,7 @@ def process_claimed_job(conn, job):
                 file_path=file_path,
                 business=bool(job["business"]),
                 known_contact=known_contact,
+                adb_transport=adb_transport,
             )
         complete_send_job(conn, job["id"])
         print(f"[+] Queue job {job['id']} completed.")
