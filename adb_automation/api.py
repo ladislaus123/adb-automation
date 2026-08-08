@@ -1,4 +1,5 @@
 import hmac
+import json
 import os
 import socket
 
@@ -37,6 +38,15 @@ from .devices import (
 )
 from .downloaded_media import cleanup_downloaded_media_file, download_media_url_to_temp
 from .errors import AutomationError, DeviceLockError
+from .notifications import (
+    MAX_INGEST_MEDIA_BYTES,
+    build_webhook_event,
+    dispatch_webhook,
+    get_received_notification,
+    list_received_notifications,
+    parse_notification_limit,
+    save_incoming_notification,
+)
 from .queue_worker import start_queue_workers
 from .send_queue import (
     JOB_STATUSES,
@@ -54,6 +64,7 @@ def create_app(start_queue_workers=True):
     register_frontend_routes(app)
     register_device_routes(app)
     register_job_routes(app)
+    register_notification_routes(app)
     register_send_route(app, "/api/sendText", text_required=True)
     register_send_route(app, "/api/sendImage", media_required=True)
     register_send_route(app, "/api/sendVoice", media_required=True)
@@ -396,6 +407,136 @@ def register_job_routes(app):
         finally:
             if conn is not None:
                 conn.close()
+
+
+def register_notification_routes(app):
+    @app.post("/api/notifications/ingest")
+    def api_ingest_notification():
+        auth_error = validate_api_key()
+        if auth_error:
+            return auth_error
+
+        try:
+            payload = parse_notification_payload()
+            media_bytes, media_mime_type = parse_notification_media()
+        except ValueError as exc:
+            return json_error(str(exc), 400)
+
+        conn = None
+        try:
+            conn = open_database()
+            init_database(conn)
+            notification = save_incoming_notification(
+                conn, payload, media_bytes=media_bytes, media_mime_type=media_mime_type
+            )
+            dispatch_webhook(build_webhook_event(notification))
+            return jsonify(
+                {"success": True, "notification": serialize_notification(notification)}
+            ), 202
+        except ValueError as exc:
+            return json_error(str(exc), 400)
+        except (AutomationError, mysql.connector.Error) as exc:
+            return json_error(str(exc), 500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.get("/api/notifications")
+    def api_list_notifications():
+        auth_error = validate_api_key()
+        if auth_error:
+            return auth_error
+
+        try:
+            limit = parse_notification_limit(request.args.get("limit", "50"))
+        except ValueError as exc:
+            return json_error(str(exc), 400)
+
+        conn = None
+        try:
+            conn = open_database()
+            init_database(conn)
+            notifications = list_received_notifications(conn, limit=limit)
+            return jsonify(
+                {
+                    "success": True,
+                    "notifications": [
+                        serialize_notification(notification) for notification in notifications
+                    ],
+                }
+            )
+        except (AutomationError, mysql.connector.Error) as exc:
+            return json_error(str(exc), 500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.get("/api/notifications/media/<int:notification_id>")
+    def api_get_notification_media(notification_id):
+        auth_error = validate_api_key()
+        if auth_error:
+            return auth_error
+
+        conn = None
+        try:
+            conn = open_database()
+            init_database(conn)
+            notification = get_received_notification(conn, notification_id)
+            if not notification or not notification["media_path"]:
+                return json_error("notification media not found.", 404)
+            if not os.path.exists(notification["media_path"]):
+                return json_error("notification media not found.", 404)
+
+            directory, filename = os.path.split(notification["media_path"])
+            return send_from_directory(
+                directory, filename, mimetype=notification["mime_type"] or None
+            )
+        except (AutomationError, mysql.connector.Error) as exc:
+            return json_error(str(exc), 500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+
+def parse_notification_payload():
+    raw_payload = request.form.get("payload")
+    if raw_payload is not None:
+        try:
+            payload = json.loads(raw_payload)
+        except ValueError as exc:
+            raise ValueError("payload must be valid JSON.") from exc
+    else:
+        payload = request.get_json(silent=True)
+
+    if not isinstance(payload, dict):
+        raise ValueError("payload is required and must be a JSON object.")
+    return payload
+
+
+def parse_notification_media():
+    media_file = request.files.get("media")
+    if media_file is None:
+        return None, None
+
+    media_bytes = media_file.read(MAX_INGEST_MEDIA_BYTES + 1)
+    if not media_bytes:
+        return None, None
+    if len(media_bytes) > MAX_INGEST_MEDIA_BYTES:
+        raise ValueError("media exceeds the maximum allowed size.")
+    return media_bytes, media_file.mimetype
+
+
+def serialize_notification(notification):
+    return {
+        "id": notification["id"],
+        "device_label": notification["device_label"],
+        "package": notification["package"],
+        "sender": notification["sender"],
+        "text": notification["text"],
+        "mime_type": notification["mime_type"],
+        "has_media": bool(notification["media_path"]),
+        "created_at": notification["created_at"],
+    }
 
 
 def validate_api_key():

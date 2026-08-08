@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 adb_automation.sqlite3
 *.sqlite3
+received_media/

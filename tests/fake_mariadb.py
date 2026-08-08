@@ -7,8 +7,10 @@ class FakeMariaDBConnection:
     def __init__(self):
         self.devices = []
         self.send_jobs = []
+        self.received_notifications = []
         self.next_id = 1
         self.next_job_id = 1
+        self.next_notification_id = 1
         self.closed = False
         self.transactions_started = 0
         self.commits = 0
@@ -50,12 +52,24 @@ class FakeCursor:
             self._insert_send_job(params)
             return
 
+        if normalized.startswith("insert into received_notifications"):
+            self._insert_received_notification(params)
+            return
+
         if normalized.startswith("select * from devices where id"):
             self.result = self._find_by_id(params[0])
             return
 
         if normalized.startswith("select * from send_jobs where id"):
             self.result = self._find_job_by_id(params[0])
+            return
+
+        if normalized.startswith("select * from received_notifications where id"):
+            self.result = self._find_notification_by_id(params[0])
+            return
+
+        if normalized.startswith("select * from received_notifications order by id desc"):
+            self.result = self._list_notifications(limit=params[0])
             return
 
         if normalized.startswith("select count(*) as job_count from send_jobs"):
@@ -245,6 +259,46 @@ class FakeCursor:
         self.conn.send_jobs.append(job)
         self.lastrowid = job["id"]
         self.conn.next_job_id += 1
+
+    def _insert_received_notification(self, params):
+        (
+            device_label,
+            package,
+            sender,
+            text,
+            mime_type,
+            media_path,
+            payload_json,
+            created_at,
+        ) = params
+        notification = {
+            "id": self.conn.next_notification_id,
+            "device_label": device_label,
+            "package": package,
+            "sender": sender,
+            "text": text,
+            "mime_type": mime_type,
+            "media_path": media_path,
+            "payload_json": payload_json,
+            "created_at": created_at,
+        }
+        self.conn.received_notifications.append(notification)
+        self.lastrowid = notification["id"]
+        self.conn.next_notification_id += 1
+
+    def _find_notification_by_id(self, notification_id):
+        for notification in self.conn.received_notifications:
+            if notification["id"] == notification_id:
+                return copy.deepcopy(notification)
+        return None
+
+    def _list_notifications(self, limit=None):
+        notifications = sorted(
+            self.conn.received_notifications, key=lambda item: item["id"], reverse=True
+        )
+        if limit is not None:
+            notifications = notifications[:limit]
+        return [copy.deepcopy(notification) for notification in notifications]
 
     def _find_by_id(self, device_id):
         for device in self.conn.devices:

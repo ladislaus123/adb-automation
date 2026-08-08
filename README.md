@@ -305,6 +305,9 @@ ADB_AUTOMATION_API_PORT=5000           # Port
 # ── Authentication ────────────────────────────────────────────────────────────
 ADB_AUTOMATION_API_KEY=your-secret-key # Required — all API requests must include this
 
+# ── Incoming notification webhooks ───────────────────────────────────────────
+ADB_AUTOMATION_WEBHOOK_URL=            # Optional — where /api/notifications/ingest events are forwarded
+
 # ── Appium ────────────────────────────────────────────────────────────────────
 ADB_AUTOMATION_APPIUM_SERVER=http://127.0.0.1:4723   # Appium server URL
 ADB_AUTOMATION_APPIUM_SETTLE_SECONDS=3               # Wait after each recovery step (min 1)
@@ -778,6 +781,68 @@ HTTP 200
   "jobs": [ ...array of job objects... ]
 }
 ```
+
+---
+
+### Notifications (incoming WhatsApp messages)
+
+Sending messages is fully covered by the endpoints above, but the consumer WhatsApp app itself has no API to notify you about *incoming* messages. The companion Android app in [`notification-listener-app/`](notification-listener-app/) runs a `NotificationListenerService` that captures WhatsApp notifications (sender, text, and attached media) on the device and forwards each one here. This server persists the event and re-publishes it to `ADB_AUTOMATION_WEBHOOK_URL` if configured (see [Configuration](#configuration)).
+
+#### `POST /api/notifications/ingest` — Ingest a captured notification
+
+Called by the notification-listener app, not typically by end users. Body is `multipart/form-data`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `payload` | JSON string | yes | `{device_label, package, conversation_title, messages: [{sender, text, timestamp_ms, has_media, mime_type}]}` |
+| `media` | file | no | Attached media (e.g. an image thumbnail), if the notification included one |
+
+**Response:**
+```json
+HTTP 202
+{
+  "success": true,
+  "notification": {
+    "id": 7,
+    "device_label": "my-phone",
+    "package": "com.whatsapp",
+    "sender": "Jane Doe",
+    "text": "Hey, are you free tomorrow?",
+    "mime_type": null,
+    "has_media": false,
+    "created_at": "2025-01-15T10:30:00"
+  }
+}
+```
+
+If `ADB_AUTOMATION_WEBHOOK_URL` is set, the same event (plus a `media_url` field when media is attached) is POSTed there as JSON on a best-effort basis (no retries).
+
+---
+
+#### `GET /api/notifications` — List recently received notifications
+
+```
+GET /api/notifications?limit=20
+```
+
+| Query param | Type | Default | Description |
+|---|---|---|---|
+| `limit` | integer | `50` | Number of notifications to return (max 500) |
+
+**Response:**
+```json
+HTTP 200
+{
+  "success": true,
+  "notifications": [ ...array of notification objects, newest first... ]
+}
+```
+
+---
+
+#### `GET /api/notifications/media/{id}` — Fetch attached media
+
+Returns the raw media file for a notification that had `has_media: true`, with the original `mime_type`.
 
 ---
 

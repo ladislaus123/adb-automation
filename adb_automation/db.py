@@ -199,6 +199,23 @@ def init_database(conn):
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """
         )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS received_notifications (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                device_label VARCHAR(255),
+                package VARCHAR(255),
+                sender VARCHAR(255),
+                text TEXT,
+                mime_type VARCHAR(128),
+                media_path TEXT,
+                payload_json TEXT,
+                created_at VARCHAR(32) NOT NULL,
+                PRIMARY KEY (id),
+                KEY idx_received_notifications_created_at (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
         conn.commit()
     finally:
         cursor.close()

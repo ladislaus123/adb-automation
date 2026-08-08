@@ -1,3 +1,5 @@
+import io
+import json
 import os
 import tempfile
 import unittest
@@ -844,6 +846,125 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(conn.devices[0]["port"], 5555)
         pair_wifi_device.assert_called_once_with("192.168.10.21", 37123, "123456")
         self.assertTrue(conn.closed)
+
+    def test_notification_ingest_requires_auth(self):
+        response = self.client.post(
+            "/api/notifications/ingest",
+            data={"payload": '{"messages": []}'},
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_notification_ingest_requires_messages(self):
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}):
+            response = self.client.post(
+                "/api/notifications/ingest",
+                data={"payload": '{"device_label": "phone-01"}'},
+                headers=self.auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("messages is required", response.get_json()["error"])
+
+    def test_notification_ingest_saves_notification_and_dispatches_webhook(self):
+        conn = FakeMariaDBConnection()
+        payload = {
+            "device_label": "phone-01",
+            "package": "com.whatsapp",
+            "conversation_title": "Jane Doe",
+            "messages": [
+                {"sender": "Jane Doe", "text": "Hey there", "timestamp_ms": 123, "has_media": False}
+            ],
+        }
+
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"), patch(
+            "adb_automation.api.dispatch_webhook", return_value=True
+        ) as dispatch_webhook:
+            response = self.client.post(
+                "/api/notifications/ingest",
+                data={"payload": json.dumps(payload)},
+                headers=self.auth_headers(),
+            )
+
+        body = response.get_json()
+        self.assertEqual(response.status_code, 202)
+        self.assertTrue(body["success"])
+        self.assertEqual(body["notification"]["sender"], "Jane Doe")
+        self.assertEqual(body["notification"]["text"], "Hey there")
+        self.assertFalse(body["notification"]["has_media"])
+        self.assertEqual(len(conn.received_notifications), 1)
+        dispatch_webhook.assert_called_once()
+        self.assertEqual(dispatch_webhook.call_args[0][0]["sender"], "Jane Doe")
+        self.assertTrue(conn.closed)
+
+    def test_notification_ingest_stores_attached_media(self):
+        conn = FakeMariaDBConnection()
+        payload = {
+            "device_label": "phone-01",
+            "package": "com.whatsapp",
+            "messages": [
+                {"sender": "Jane Doe", "text": "photo", "has_media": True, "mime_type": "image/jpeg"}
+            ],
+        }
+
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"), patch(
+            "adb_automation.api.dispatch_webhook", return_value=True
+        ):
+            response = self.client.post(
+                "/api/notifications/ingest",
+                data={
+                    "payload": json.dumps(payload),
+                    "media": (io.BytesIO(b"fake-jpeg-bytes"), "thumb.jpg"),
+                },
+                headers=self.auth_headers(),
+                content_type="multipart/form-data",
+            )
+
+        body = response.get_json()
+        self.assertEqual(response.status_code, 202)
+        self.assertTrue(body["notification"]["has_media"])
+        media_path = conn.received_notifications[0]["media_path"]
+        try:
+            self.assertTrue(os.path.exists(media_path))
+        finally:
+            if media_path and os.path.exists(media_path):
+                os.remove(media_path)
+
+    def test_notification_list_route_returns_notifications(self):
+        conn = FakeMariaDBConnection()
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"), patch(
+            "adb_automation.api.dispatch_webhook", return_value=True
+        ):
+            self.client.post(
+                "/api/notifications/ingest",
+                data={"payload": json.dumps({"messages": [{"sender": "Jane", "text": "hi"}]})},
+                headers=self.auth_headers(),
+            )
+            response = self.client.get(
+                "/api/notifications", headers=self.auth_headers()
+            )
+
+        body = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(body["notifications"]), 1)
+        self.assertEqual(body["notifications"][0]["sender"], "Jane")
+
+    def test_notification_media_route_returns_not_found_when_missing(self):
+        conn = FakeMariaDBConnection()
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"):
+            response = self.client.get(
+                "/api/notifications/media/999", headers=self.auth_headers()
+            )
+
+        self.assertEqual(response.status_code, 404)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import argparse
 import os
+from dotenv import load_dotenv
 
 from adb_automation.api import create_app
 from adb_automation.config import (
@@ -9,6 +10,8 @@ from adb_automation.config import (
     DEFAULT_API_PORT,
     env_int,
 )
+
+load_dotenv()
 
 app = create_app()
 
