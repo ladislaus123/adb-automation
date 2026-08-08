@@ -1,6 +1,7 @@
 import json
 import mimetypes
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -14,6 +15,22 @@ DEFAULT_NOTIFICATION_LIST_LIMIT = 50
 MAX_NOTIFICATION_LIST_LIMIT = 500
 MAX_INGEST_MEDIA_BYTES = 25 * 1024 * 1024
 WEBHOOK_TIMEOUT_SECONDS = 5
+
+PHONE_NUMBER_SENDER_PATTERN = re.compile(r"[\d+\-\s().]+")
+
+
+def normalize_sender(sender):
+    """Strip a phone-number-looking sender down to digits only (e.g. "+55 47 9757-1861"
+    -> "554797571861"). Contact names (letters present) are returned unchanged."""
+    if not sender:
+        return sender
+
+    sender = sender.strip()
+    if not PHONE_NUMBER_SENDER_PATTERN.fullmatch(sender):
+        return sender
+
+    digits = re.sub(r"\D", "", sender)
+    return digits or sender
 
 
 def parse_notification_limit(value):
@@ -44,6 +61,7 @@ def save_incoming_notification(conn, payload, media_bytes=None, media_mime_type=
     sender = (first_message.get("sender") if isinstance(first_message, dict) else None) or (
         conversation_title if isinstance(conversation_title, str) else None
     )
+    sender = normalize_sender(sender)
     text = "\n".join(
         str(message.get("text") or "") for message in messages if isinstance(message, dict)
     ).strip() or None

@@ -899,6 +899,31 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(dispatch_webhook.call_args[0][0]["sender"], "Jane Doe")
         self.assertTrue(conn.closed)
 
+    def test_notification_ingest_normalizes_phone_number_sender(self):
+        conn = FakeMariaDBConnection()
+        payload = {
+            "device_label": "phone-01",
+            "package": "com.whatsapp",
+            "messages": [
+                {"sender": "+55 47 9757-1861", "text": "hello", "has_media": False}
+            ],
+        }
+
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"), patch(
+            "adb_automation.api.dispatch_webhook", return_value=True
+        ) as dispatch_webhook:
+            response = self.client.post(
+                "/api/notifications/ingest",
+                data={"payload": json.dumps(payload)},
+                headers=self.auth_headers(),
+            )
+
+        body = response.get_json()
+        self.assertEqual(body["notification"]["sender"], "554797571861")
+        self.assertEqual(dispatch_webhook.call_args[0][0]["sender"], "554797571861")
+
     def test_notification_ingest_stores_attached_media(self):
         conn = FakeMariaDBConnection()
         payload = {

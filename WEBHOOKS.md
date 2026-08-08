@@ -42,11 +42,11 @@ X-API-Key: <ADB_AUTOMATION_API_KEY>
 {
   "device_label": "phone-01",
   "package": "com.whatsapp",
-  "conversation_title": "Jane Doe",
+  "conversation_title": "+55 47 9757-1861",
   "post_time_ms": 1736330200000,
   "messages": [
     {
-      "sender": "Jane Doe",
+      "sender": "+55 47 9757-1861",
       "text": "Hey, are you free tomorrow?",
       "timestamp_ms": 1736330200000,
       "has_media": false,
@@ -60,6 +60,7 @@ X-API-Key: <ADB_AUTOMATION_API_KEY>
 - `package` — `com.whatsapp` (Messenger) or `com.whatsapp.w4b` (Business).
 - `messages` — required, non-empty array. WhatsApp's grouped notifications can bundle multiple unread messages into one notification post, so this is a list, not a single message.
 - `has_media` / `mime_type` — set when a message has an attached image; the actual bytes travel in the separate `media` form field.
+- `sender` — whatever WhatsApp's notification shows: a saved contact name (e.g. `"Jane Doe"`) or a raw phone number (e.g. `"+55 47 9757-1861"`) for numbers not in contacts. See **Sender normalization** below — the server rewrites phone-number-shaped senders before storing/forwarding them.
 
 **Response — `202 Accepted`:**
 
@@ -70,7 +71,7 @@ X-API-Key: <ADB_AUTOMATION_API_KEY>
     "id": 7,
     "device_label": "phone-01",
     "package": "com.whatsapp",
-    "sender": "Jane Doe",
+    "sender": "554797571861",
     "text": "Hey, are you free tomorrow?",
     "mime_type": null,
     "has_media": false,
@@ -82,6 +83,21 @@ X-API-Key: <ADB_AUTOMATION_API_KEY>
 Note: `sender`/`text` on the stored notification are derived from the **first** message in the
 `messages` array (`text` is actually all messages' text joined with `\n`); the full original
 payload is kept as-is in the `payload_json` column if you need per-message detail later.
+
+### Sender normalization
+
+If `sender` (or, as a fallback, `conversation_title`) looks like a phone number — i.e. it's made up
+only of digits, spaces, `+`, `-`, `(`, `)` — the server strips it down to digits only before storing
+it and before it goes out in a webhook:
+
+```
+"+55 47 9757-1861"   ->  "554797571861"
+"(11) 91234-5678"    ->  "11912345678"
+```
+
+Senders that contain letters (a saved contact name, e.g. `"Jane Doe"`) are left untouched — only
+phone-number-shaped senders are normalized. This happens once, in `adb_automation.notifications.normalize_sender`,
+so it applies consistently to the stored row, `GET /api/notifications`, and the outbound webhook event.
 
 ## 2. Webhook delivery (server → your service)
 
@@ -100,7 +116,7 @@ Content-Type: application/json
   "id": 7,
   "device_label": "phone-01",
   "package": "com.whatsapp",
-  "sender": "Jane Doe",
+  "sender": "554797571861",
   "text": "Hey, are you free tomorrow?",
   "mime_type": null,
   "has_media": false,
@@ -116,7 +132,7 @@ When media was attached:
   "id": 8,
   "device_label": "phone-01",
   "package": "com.whatsapp",
-  "sender": "Jane Doe",
+  "sender": "554797571861",
   "text": "",
   "mime_type": "image/jpeg",
   "has_media": true,
@@ -124,6 +140,8 @@ When media was attached:
   "created_at": "2025-01-15T10:31:05+00:00"
 }
 ```
+
+(`sender` stays e.g. `"Jane Doe"` unchanged when it's a saved contact name — see **Sender normalization** above.)
 
 `media_url` is a **relative** path on this adb-automation server, not a fully-qualified URL —
 prepend the server's own base URL, then fetch it with the same `X-API-Key` header:
@@ -172,8 +190,8 @@ Returns `{"success": true, "notifications": [ ...newest first... ]}`, each item 
 ```bash
 curl -X POST http://localhost:5000/api/notifications/ingest \
   -H "X-API-Key: $ADB_AUTOMATION_API_KEY" \
-  -F 'payload={"device_label":"test","package":"com.whatsapp","messages":[{"sender":"Jane","text":"hello"}]}'
+  -F 'payload={"device_label":"test","package":"com.whatsapp","messages":[{"sender":"+55 47 9757-1861","text":"hello"}]}'
 ```
 
 If `ADB_AUTOMATION_WEBHOOK_URL` is set to something like `https://webhook.site/<id>`, you should see
-the JSON event land there immediately.
+the JSON event land there immediately, with `sender` normalized to `"554797571861"`.
