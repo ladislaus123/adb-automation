@@ -88,6 +88,6 @@ if ! adb -s "$SERIAL" install -r "$APK_PATH"; then
   exit 1
 fi
 
-echo "[+] Installed. On the phone, open 'Notif Listener' and:"
-echo "    1. Enter the server URL and the ADB_AUTOMATION_API_KEY value, then Save"
-echo "    2. Tap 'Grant notification access' and enable it in system settings"
+echo "[+] Installed. Server URL, API key, and device label are prefilled automatically."
+echo "    On the phone, open 'Notif Listener' and tap 'Grant notification access',"
+echo "    then enable it for this app in system settings."

@@ -19,6 +19,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         prefs = Prefs.get(this)
+        Prefs.ensureDefaults(this, prefs)
 
         val serverUrlInput = findViewById<EditText>(R.id.serverUrlInput)
         val apiKeyInput = findViewById<EditText>(R.id.apiKeyInput)
