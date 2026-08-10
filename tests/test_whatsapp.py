@@ -1,8 +1,8 @@
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
-from adb_automation import whatsapp
+from adb_automation import adb, whatsapp
 from adb_automation.config import (
     WHATSAPP_BUSINESS_PACKAGE,
     WHATSAPP_MESSENGER_PACKAGE,
@@ -373,6 +373,197 @@ class WhatsappSendButtonTests(unittest.TestCase):
             )
         )
 
+    def test_send_whatsapp_continues_when_portrait_force_fails(self):
+        adb_commands = []
+        serial = "192.168.10.21:5555"
+
+        def fake_run_adb(command, serial=None):
+            adb_commands.append(command)
+            if command == [
+                "shell",
+                "settings",
+                "get",
+                "system",
+                "accelerometer_rotation",
+            ]:
+                return "1\n"
+            if command == ["shell", "settings", "get", "system", "user_rotation"]:
+                return "3\n"
+            if command == [
+                "shell",
+                "settings",
+                "put",
+                "system",
+                "accelerometer_rotation",
+                "0",
+            ]:
+                raise adb.AdbError("rotation denied")
+            return ""
+
+        with patch(
+            "adb_automation.whatsapp.get_whatsapp_package",
+            return_value=WHATSAPP_MESSENGER_PACKAGE,
+        ), patch(
+            "adb_automation.whatsapp.run_adb", side_effect=fake_run_adb
+        ), patch(
+            "adb_automation.chat_navigation.open_chat_via_ui",
+            return_value=False,
+        ), patch(
+            "adb_automation.whatsapp.focus_message_entry",
+            return_value=FakeUiSelector(exists=True),
+        ), patch(
+            "adb_automation.whatsapp.click_send_button"
+        ) as click_send_button, patch(
+            "adb_automation.whatsapp.time.sleep"
+        ), patch(
+            "builtins.print"
+        ):
+            whatsapp.send_whatsapp(
+                serial,
+                "5511999999999",
+                text="hello there",
+            )
+
+        click_send_button.assert_called_once_with(
+            serial,
+            WHATSAPP_MESSENGER_PACKAGE,
+            fail_on_contact_picker=False,
+        )
+        self.assertEqual(replay_adb_text_buffer(adb_commands), "hello there")
+        self.assertIn(
+            ["shell", "settings", "put", "system", "accelerometer_rotation", "1"],
+            adb_commands,
+        )
+        self.assertIn(
+            ["shell", "settings", "put", "system", "user_rotation", "3"],
+            adb_commands,
+        )
+
+    def test_send_whatsapp_dismisses_keyboard_and_retries_send_button_for_text(self):
+        adb_commands = []
+        serial = "192.168.10.21:5555"
+
+        def fake_run_adb(command, serial=None):
+            adb_commands.append(command)
+            if command == [
+                "shell",
+                "settings",
+                "get",
+                "system",
+                "accelerometer_rotation",
+            ]:
+                return "1\n"
+            if command == ["shell", "settings", "get", "system", "user_rotation"]:
+                return "2\n"
+            return ""
+
+        with patch(
+            "adb_automation.whatsapp.get_whatsapp_package",
+            return_value=WHATSAPP_MESSENGER_PACKAGE,
+        ), patch(
+            "adb_automation.whatsapp.run_adb", side_effect=fake_run_adb
+        ), patch(
+            "adb_automation.chat_navigation.open_chat_via_ui",
+            return_value=False,
+        ), patch(
+            "adb_automation.whatsapp.focus_message_entry",
+            return_value=FakeUiSelector(exists=True),
+        ), patch(
+            "adb_automation.whatsapp.click_send_button",
+            side_effect=[whatsapp.AutomationError("button hidden"), None],
+        ) as click_send_button, patch(
+            "adb_automation.whatsapp.time.sleep"
+        ), patch(
+            "builtins.print"
+        ):
+            whatsapp.send_whatsapp(
+                serial,
+                "5511999999999",
+                text="hello there",
+            )
+
+        self.assertEqual(
+            click_send_button.call_args_list,
+            [
+                call(
+                    serial,
+                    WHATSAPP_MESSENGER_PACKAGE,
+                    fail_on_contact_picker=False,
+                ),
+                call(
+                    serial,
+                    WHATSAPP_MESSENGER_PACKAGE,
+                    fail_on_contact_picker=False,
+                ),
+            ],
+        )
+        self.assertIn(
+            ["shell", "input", "keyevent", "KEYCODE_BACK"],
+            adb_commands,
+        )
+
+    def test_send_whatsapp_restores_rotation_after_send_button_retry_fails(self):
+        adb_commands = []
+        serial = "192.168.10.21:5555"
+
+        def fake_run_adb(command, serial=None):
+            adb_commands.append(command)
+            if command == [
+                "shell",
+                "settings",
+                "get",
+                "system",
+                "accelerometer_rotation",
+            ]:
+                return "0\n"
+            if command == ["shell", "settings", "get", "system", "user_rotation"]:
+                return "1\n"
+            return ""
+
+        with self.assertRaisesRegex(whatsapp.AutomationError, "still hidden"):
+            with patch(
+                "adb_automation.whatsapp.get_whatsapp_package",
+                return_value=WHATSAPP_MESSENGER_PACKAGE,
+            ), patch(
+                "adb_automation.whatsapp.run_adb", side_effect=fake_run_adb
+            ), patch(
+                "adb_automation.chat_navigation.open_chat_via_ui",
+                return_value=False,
+            ), patch(
+                "adb_automation.whatsapp.focus_message_entry",
+                return_value=FakeUiSelector(exists=True),
+            ), patch(
+                "adb_automation.whatsapp.click_send_button",
+                side_effect=[
+                    whatsapp.AutomationError("button hidden"),
+                    whatsapp.AutomationError("still hidden"),
+                ],
+            ), patch(
+                "adb_automation.whatsapp.time.sleep"
+            ), patch(
+                "builtins.print"
+            ):
+                whatsapp.send_whatsapp(
+                    serial,
+                    "5511999999999",
+                    text="hello there",
+                )
+
+        self.assertEqual(
+            adb_commands[-2:],
+            [
+                [
+                    "shell",
+                    "settings",
+                    "put",
+                    "system",
+                    "accelerometer_rotation",
+                    "0",
+                ],
+                ["shell", "settings", "put", "system", "user_rotation", "1"],
+            ],
+        )
+
     def test_send_whatsapp_falls_back_to_prefilled_url_when_entry_is_missing(self):
         with patch(
             "adb_automation.whatsapp.get_whatsapp_package",
@@ -539,9 +730,18 @@ class WhatsappSendButtonTests(unittest.TestCase):
             adb_transport="wifi",
         )
         click_send_button.assert_not_called()
-        self.assertEqual(
-            [call.args[0] for call in run_adb.call_args_list],
-            [["shell", "input", "keyevent", "KEYCODE_WAKEUP"]],
+        adb_commands = [call.args[0] for call in run_adb.call_args_list]
+        self.assertIn(
+            ["shell", "input", "keyevent", "KEYCODE_WAKEUP"],
+            adb_commands,
+        )
+        self.assertIn(
+            ["shell", "settings", "put", "system", "accelerometer_rotation", "0"],
+            adb_commands,
+        )
+        self.assertIn(
+            ["shell", "settings", "put", "system", "user_rotation", "0"],
+            adb_commands,
         )
 
     def test_send_whatsapp_image_uses_appium_media_sender(self):
@@ -574,9 +774,18 @@ class WhatsappSendButtonTests(unittest.TestCase):
             adb_transport="wifi",
         )
         click_send_button.assert_not_called()
-        self.assertEqual(
-            [call.args[0] for call in run_adb.call_args_list],
-            [["shell", "input", "keyevent", "KEYCODE_WAKEUP"]],
+        adb_commands = [call.args[0] for call in run_adb.call_args_list]
+        self.assertIn(
+            ["shell", "input", "keyevent", "KEYCODE_WAKEUP"],
+            adb_commands,
+        )
+        self.assertIn(
+            ["shell", "settings", "put", "system", "accelerometer_rotation", "0"],
+            adb_commands,
+        )
+        self.assertIn(
+            ["shell", "settings", "put", "system", "user_rotation", "0"],
+            adb_commands,
         )
 
     def test_send_whatsapp_video_uses_selected_business_package_with_appium(self):

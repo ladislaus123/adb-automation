@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 
 from .devices import ADB_TRANSPORT_USB, ADB_TRANSPORT_WIFI, normalize_adb_transport
 from .errors import AdbError
@@ -34,6 +35,8 @@ WM_SIZE_PATTERN = re.compile(r"Physical size:\s*(\d+)x(\d+)")
 DEFAULT_SCREEN_SIZE = (1080, 1920)
 WAKE_SETTLE_SECONDS = 0.5
 UNLOCK_SETTLE_SECONDS = 0.5
+ROTATION_SETTINGS = ("accelerometer_rotation", "user_rotation")
+PORTRAIT_USER_ROTATION = "0"
 
 
 def _find_adb():
@@ -149,6 +152,76 @@ def parse_screen_size(output):
     if not match:
         return DEFAULT_SCREEN_SIZE
     return int(match.group(1)), int(match.group(2))
+
+
+def read_rotation_settings(serial, run_adb_command=run_adb):
+    settings = {}
+    for name in ROTATION_SETTINGS:
+        output = run_adb_command(
+            ["shell", "settings", "get", "system", name],
+            serial=serial,
+        )
+        settings[name] = output.strip()
+    return settings
+
+
+def force_portrait_orientation(serial, run_adb_command=run_adb):
+    run_adb_command(
+        ["shell", "settings", "put", "system", "accelerometer_rotation", "0"],
+        serial=serial,
+    )
+    run_adb_command(
+        [
+            "shell",
+            "settings",
+            "put",
+            "system",
+            "user_rotation",
+            PORTRAIT_USER_ROTATION,
+        ],
+        serial=serial,
+    )
+
+
+def restore_rotation_settings(serial, settings, run_adb_command=run_adb):
+    for name, value in settings.items():
+        if value == "":
+            continue
+        run_adb_command(
+            ["shell", "settings", "put", "system", name, value],
+            serial=serial,
+        )
+
+
+@contextmanager
+def portrait_orientation_guard(serial, run_adb_command=run_adb):
+    original_settings = None
+    try:
+        original_settings = read_rotation_settings(
+            serial,
+            run_adb_command=run_adb_command,
+        )
+    except AdbError as exc:
+        print(f"[WARN] Could not read rotation settings: {exc}")
+
+    try:
+        force_portrait_orientation(serial, run_adb_command=run_adb_command)
+    except AdbError as exc:
+        print(f"[WARN] Could not force portrait orientation: {exc}")
+
+    try:
+        yield
+    finally:
+        if original_settings is None:
+            return
+        try:
+            restore_rotation_settings(
+                serial,
+                original_settings,
+                run_adb_command=run_adb_command,
+            )
+        except AdbError as exc:
+            print(f"[WARN] Could not restore rotation settings: {exc}")
 
 
 def screen_is_awake(serial, run_adb_command=run_adb):

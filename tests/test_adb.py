@@ -162,6 +162,178 @@ class AdbCommandTests(unittest.TestCase):
             ],
         )
 
+    def test_portrait_orientation_guard_forces_and_restores_rotation(self):
+        commands = []
+        serial = "192.168.10.21:5555"
+
+        def fake_run_adb(command, serial=None):
+            commands.append((command, serial))
+            if command == [
+                "shell",
+                "settings",
+                "get",
+                "system",
+                "accelerometer_rotation",
+            ]:
+                return "1\n"
+            if command == ["shell", "settings", "get", "system", "user_rotation"]:
+                return "3\n"
+            return ""
+
+        with adb.portrait_orientation_guard(serial, run_adb_command=fake_run_adb):
+            commands.append((["inside"], serial))
+
+        self.assertEqual(
+            commands,
+            [
+                (
+                    [
+                        "shell",
+                        "settings",
+                        "get",
+                        "system",
+                        "accelerometer_rotation",
+                    ],
+                    serial,
+                ),
+                (
+                    ["shell", "settings", "get", "system", "user_rotation"],
+                    serial,
+                ),
+                (
+                    [
+                        "shell",
+                        "settings",
+                        "put",
+                        "system",
+                        "accelerometer_rotation",
+                        "0",
+                    ],
+                    serial,
+                ),
+                (
+                    ["shell", "settings", "put", "system", "user_rotation", "0"],
+                    serial,
+                ),
+                (["inside"], serial),
+                (
+                    [
+                        "shell",
+                        "settings",
+                        "put",
+                        "system",
+                        "accelerometer_rotation",
+                        "1",
+                    ],
+                    serial,
+                ),
+                (
+                    ["shell", "settings", "put", "system", "user_rotation", "3"],
+                    serial,
+                ),
+            ],
+        )
+
+    def test_portrait_orientation_guard_continues_when_force_fails(self):
+        commands = []
+        serial = "192.168.10.21:5555"
+
+        def fake_run_adb(command, serial=None):
+            commands.append((command, serial))
+            if command == [
+                "shell",
+                "settings",
+                "get",
+                "system",
+                "accelerometer_rotation",
+            ]:
+                return "1\n"
+            if command == ["shell", "settings", "get", "system", "user_rotation"]:
+                return "2\n"
+            if command == [
+                "shell",
+                "settings",
+                "put",
+                "system",
+                "accelerometer_rotation",
+                "0",
+            ]:
+                raise adb.AdbError("permission denied")
+            return ""
+
+        with patch("builtins.print") as print_mock:
+            with adb.portrait_orientation_guard(serial, run_adb_command=fake_run_adb):
+                commands.append((["inside"], serial))
+
+        self.assertIn((["inside"], serial), commands)
+        self.assertIn(
+            (
+                [
+                    "shell",
+                    "settings",
+                    "put",
+                    "system",
+                    "accelerometer_rotation",
+                    "1",
+                ],
+                serial,
+            ),
+            commands,
+        )
+        self.assertIn(
+            (
+                ["shell", "settings", "put", "system", "user_rotation", "2"],
+                serial,
+            ),
+            commands,
+        )
+        print_mock.assert_any_call(
+            "[WARN] Could not force portrait orientation: permission denied"
+        )
+
+    def test_portrait_orientation_guard_restores_after_body_failure(self):
+        commands = []
+        serial = "192.168.10.21:5555"
+
+        def fake_run_adb(command, serial=None):
+            commands.append((command, serial))
+            if command == [
+                "shell",
+                "settings",
+                "get",
+                "system",
+                "accelerometer_rotation",
+            ]:
+                return "0\n"
+            if command == ["shell", "settings", "get", "system", "user_rotation"]:
+                return "1\n"
+            return ""
+
+        with self.assertRaisesRegex(RuntimeError, "send failed"):
+            with adb.portrait_orientation_guard(serial, run_adb_command=fake_run_adb):
+                raise RuntimeError("send failed")
+
+        self.assertEqual(
+            commands[-2:],
+            [
+                (
+                    [
+                        "shell",
+                        "settings",
+                        "put",
+                        "system",
+                        "accelerometer_rotation",
+                        "0",
+                    ],
+                    serial,
+                ),
+                (
+                    ["shell", "settings", "put", "system", "user_rotation", "1"],
+                    serial,
+                ),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
