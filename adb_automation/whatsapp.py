@@ -3,7 +3,7 @@ import os
 import time
 import urllib.parse
 
-from .adb import run_adb
+from .adb import portrait_orientation_guard, run_adb
 from .appium_media import send_media_with_appium
 from .config import STREAM_EXTRA, WHATSAPP_BUSINESS_PACKAGE, WHATSAPP_PACKAGES
 from .errors import AutomationError
@@ -29,6 +29,7 @@ HUMAN_CORRECTION_FRAGMENTS = ("teh", "kk", "..", "hm")
 ADB_INPUT_SHELL_SPECIALS = set("'\"`$&|;<>()*?!#[]{}~\\")
 TEXT_CHUNK_ADB = "adb"
 TEXT_CHUNK_UNICODE = "unicode"
+KEYBOARD_DISMISS_SETTLE_SECONDS = 0.8
 
 
 def normalize_phone(phone):
@@ -237,6 +238,35 @@ def click_send_button(
     )
     raise AutomationError(
         "Could not find the WhatsApp send button with uiautomator2." + details
+    )
+
+
+def click_send_button_with_keyboard_fallback(
+    serial,
+    whatsapp_package,
+    fail_on_contact_picker=False,
+):
+    try:
+        click_send_button(
+            serial,
+            whatsapp_package,
+            fail_on_contact_picker=fail_on_contact_picker,
+        )
+        return
+    except AutomationError as exc:
+        if fail_on_contact_picker:
+            raise
+        print(
+            "[WARN] Could not find send button; dismissing keyboard and retrying: "
+            f"{exc}"
+        )
+
+    run_adb(["shell", "input", "keyevent", "KEYCODE_BACK"], serial=serial)
+    time.sleep(KEYBOARD_DISMISS_SETTLE_SECONDS)
+    click_send_button(
+        serial,
+        whatsapp_package,
+        fail_on_contact_picker=fail_on_contact_picker,
     )
 
 
@@ -530,74 +560,87 @@ def send_whatsapp(
         raise AutomationError("WhatsApp is not installed. Expected com.whatsapp.")
     print(f"[*] Using WhatsApp package: {whatsapp_package}")
 
-    run_adb(["shell", "input", "keyevent", "KEYCODE_WAKEUP"], serial=serial)
-
     if file_path and not os.path.exists(file_path):
         raise ValueError(f"media file not found: {file_path}")
 
-    if file_path:
-        mime_type = guessed_mime_type(file_path)
-        if should_use_appium_media(mime_type):
-            print(
-                f"[*] Sending {os.path.basename(file_path)} through "
-                f"Appium media picker ({mime_type})..."
-            )
-            send_media_with_appium(
+    with portrait_orientation_guard(serial, run_adb_command=run_adb):
+        run_adb(["shell", "input", "keyevent", "KEYCODE_WAKEUP"], serial=serial)
+
+        if file_path:
+            mime_type = guessed_mime_type(file_path)
+            if should_use_appium_media(mime_type):
+                print(
+                    f"[*] Sending {os.path.basename(file_path)} through "
+                    f"Appium media picker ({mime_type})..."
+                )
+                send_media_with_appium(
+                    serial,
+                    phone,
+                    file_path,
+                    whatsapp_package,
+                    text=text,
+                    mime_type=mime_type,
+                    known_contact=known_contact,
+                    adb_transport=adb_transport,
+                )
+                print("[+] Transmission automated successfully!")
+                return
+
+            launch_whatsapp_direct_media(
                 serial,
                 phone,
+                text,
                 file_path,
                 whatsapp_package,
-                text=text,
-                mime_type=mime_type,
-                known_contact=known_contact,
-                adb_transport=adb_transport,
+                mime_type,
             )
-            print("[+] Transmission automated successfully!")
-            return
-
-        launch_whatsapp_direct_media(
-            serial,
-            phone,
-            text,
-            file_path,
-            whatsapp_package,
-            mime_type,
-        )
-        fail_on_contact_picker = True
-    else:
-        from .chat_navigation import open_chat_via_ui
-
-        if not open_chat_via_ui(serial, phone, whatsapp_package, known_contact):
-            launch_whatsapp_text(serial, phone, whatsapp_package)
-        fail_on_contact_picker = False
-
-    print("[*] Waiting for WhatsApp UI to settle...")
-    time.sleep(3.5)
-
-    if not file_path:
-        print("[*] Focusing WhatsApp message field...")
-        try:
-            message_entry = focus_message_entry(serial, whatsapp_package)
-        except AutomationError as exc:
-            print(f"[WARN] {exc}")
-            launch_whatsapp_prefilled_text(serial, phone, text, whatsapp_package)
-            print("[*] Waiting for WhatsApp prefilled text UI to settle...")
-            time.sleep(3.5)
+            fail_on_contact_picker = True
         else:
-            print("[*] Typing message with human-like pacing...")
+            from .chat_navigation import open_chat_via_ui
+
+            if not open_chat_via_ui(serial, phone, whatsapp_package, known_contact):
+                launch_whatsapp_text(serial, phone, whatsapp_package)
+            fail_on_contact_picker = False
+
+        print("[*] Waiting for WhatsApp UI to settle...")
+        time.sleep(3.5)
+
+        if not file_path:
+            print("[*] Focusing WhatsApp message field...")
             try:
-                human_type_text(serial, text, message_entry=message_entry)
+                message_entry = focus_message_entry(serial, whatsapp_package)
             except AutomationError as exc:
-                print(f"[WARN] Human-like typing failed; falling back: {exc}")
-                clear_message_draft(serial, text)
+                print(f"[WARN] {exc}")
                 launch_whatsapp_prefilled_text(serial, phone, text, whatsapp_package)
                 print("[*] Waiting for WhatsApp prefilled text UI to settle...")
                 time.sleep(3.5)
+            else:
+                print("[*] Typing message with human-like pacing...")
+                try:
+                    human_type_text(serial, text, message_entry=message_entry)
+                except AutomationError as exc:
+                    print(f"[WARN] Human-like typing failed; falling back: {exc}")
+                    clear_message_draft(serial, text)
+                    launch_whatsapp_prefilled_text(
+                        serial,
+                        phone,
+                        text,
+                        whatsapp_package,
+                    )
+                    print("[*] Waiting for WhatsApp prefilled text UI to settle...")
+                    time.sleep(3.5)
 
-    print("[*] Finding WhatsApp send button with uiautomator2...")
-    click_send_button(
-        serial,
-        whatsapp_package,
-        fail_on_contact_picker=fail_on_contact_picker,
-    )
-    print("[+] Transmission automated successfully!")
+        print("[*] Finding WhatsApp send button with uiautomator2...")
+        if file_path:
+            click_send_button(
+                serial,
+                whatsapp_package,
+                fail_on_contact_picker=fail_on_contact_picker,
+            )
+        else:
+            click_send_button_with_keyboard_fallback(
+                serial,
+                whatsapp_package,
+                fail_on_contact_picker=fail_on_contact_picker,
+            )
+        print("[+] Transmission automated successfully!")
