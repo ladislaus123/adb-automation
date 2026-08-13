@@ -1,6 +1,6 @@
 import time
 
-from .adb import run_adb
+from .adb import ensure_portrait_orientation, run_adb
 from .whatsapp import (
     connect_uiautomator_device,
     normalize_phone,
@@ -973,6 +973,8 @@ def open_chat_via_ui(
     except Exception as exc:
         print(f"[WARN] Contact navigation unavailable; using link route: {exc}")
         return False
+
+    ensure_portrait_orientation(serial, run_adb_command=run_adb_command)
 
     try:
         if not known_contact:

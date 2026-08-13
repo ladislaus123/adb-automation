@@ -3,8 +3,7 @@ import os
 import time
 import urllib.parse
 
-from .adb import portrait_orientation_guard, run_adb
-from .appium_media import send_media_with_appium
+from .adb import ensure_portrait_orientation, portrait_orientation_guard, run_adb
 from .config import STREAM_EXTRA, WHATSAPP_BUSINESS_PACKAGE, WHATSAPP_PACKAGES
 from .errors import AutomationError
 
@@ -44,7 +43,7 @@ def guessed_mime_type(file_path):
     return mime_type
 
 
-def should_use_appium_media(mime_type):
+def should_use_gallery_media_flow(mime_type):
     return bool(
         mime_type
         and (
@@ -296,6 +295,7 @@ def launch_whatsapp_direct_media(
         "android.intent.action.SEND",
         "-t",
         mime_type,
+        "--grant-read-uri-permission",
         "--es",
         "jid",
         f"{phone}@s.whatsapp.net",
@@ -568,20 +568,20 @@ def send_whatsapp(
 
         if file_path:
             mime_type = guessed_mime_type(file_path)
-            if should_use_appium_media(mime_type):
+            if should_use_gallery_media_flow(mime_type):
+                from .media_picker import send_media_via_gallery_picker
+
                 print(
-                    f"[*] Sending {os.path.basename(file_path)} through "
-                    f"Appium media picker ({mime_type})..."
+                    f"[*] Sending {os.path.basename(file_path)} through the "
+                    f"WhatsApp attach/gallery picker over ADB ({mime_type})..."
                 )
-                send_media_with_appium(
+                send_media_via_gallery_picker(
                     serial,
                     phone,
                     file_path,
                     whatsapp_package,
                     text=text,
                     mime_type=mime_type,
-                    known_contact=known_contact,
-                    adb_transport=adb_transport,
                 )
                 print("[+] Transmission automated successfully!")
                 return
@@ -606,6 +606,7 @@ def send_whatsapp(
         time.sleep(3.5)
 
         if not file_path:
+            ensure_portrait_orientation(serial, run_adb_command=run_adb)
             print("[*] Focusing WhatsApp message field...")
             try:
                 message_entry = focus_message_entry(serial, whatsapp_package)

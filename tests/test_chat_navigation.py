@@ -243,6 +243,45 @@ class EnsureHomeTests(unittest.TestCase):
         )
 
 
+class OpenChatViaUiOrientationTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch("adb_automation.chat_navigation.time.sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_open_chat_via_ui_reasserts_portrait_before_navigating(self):
+        serial = "192.168.10.21:5555"
+        events = []
+
+        def fake_run_adb(command, serial=None):
+            events.append(tuple(command))
+            return ""
+
+        def fake_ensure_home(serial, device, whatsapp_package, run_adb_command=None):
+            events.append("ensure_whatsapp_home")
+            return False
+
+        with patch(
+            "adb_automation.chat_navigation.ensure_whatsapp_home",
+            side_effect=fake_ensure_home,
+        ), patch("builtins.print"):
+            result = chat_navigation.open_chat_via_ui(
+                serial,
+                "5511999999999",
+                WHATSAPP_MESSENGER_PACKAGE,
+                known_contact=True,
+                device_connector=lambda serial: object(),
+                run_adb_command=fake_run_adb,
+            )
+
+        self.assertFalse(result)
+        fix_rotation_index = events.index(
+            ("shell", "cmd", "window", "fixed-to-user-rotation", "enabled")
+        )
+        home_index = events.index("ensure_whatsapp_home")
+        self.assertLess(fix_rotation_index, home_index)
+
+
 class TapElementTests(unittest.TestCase):
     def test_direct_click_is_used_when_it_succeeds(self):
         selector = FakeSelector(exists=True)

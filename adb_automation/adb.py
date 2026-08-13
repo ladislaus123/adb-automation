@@ -37,6 +37,15 @@ WAKE_SETTLE_SECONDS = 0.5
 UNLOCK_SETTLE_SECONDS = 0.5
 ROTATION_SETTINGS = ("accelerometer_rotation", "user_rotation")
 PORTRAIT_USER_ROTATION = "0"
+LANDSCAPE_ROTATIONS = (1, 3)
+DISPLAY_ROTATION_PATTERNS = (
+    re.compile(r"SurfaceOrientation:\s*(\d)"),
+    re.compile(r"mRotation=(\d)\b"),
+    re.compile(r"mRotation=ROTATION_(\d+)\b"),
+)
+ROTATION_DEGREES_TO_INDEX = {0: 0, 90: 1, 180: 2, 270: 3}
+ENSURE_PORTRAIT_ATTEMPTS = 3
+ENSURE_PORTRAIT_RETRY_DELAY_SECONDS = 0.6
 
 
 def _find_adb():
@@ -66,7 +75,8 @@ def run_adb(command_list, serial=None):
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
         return result.stdout
@@ -154,6 +164,19 @@ def parse_screen_size(output):
     return int(match.group(1)), int(match.group(2))
 
 
+def parse_display_rotation(output):
+    output = output or ""
+    for pattern in DISPLAY_ROTATION_PATTERNS:
+        match = pattern.search(output)
+        if not match:
+            continue
+        value = int(match.group(1))
+        if pattern is DISPLAY_ROTATION_PATTERNS[-1]:
+            return ROTATION_DEGREES_TO_INDEX.get(value)
+        return value
+    return None
+
+
 def read_rotation_settings(serial, run_adb_command=run_adb):
     settings = {}
     for name in ROTATION_SETTINGS:
@@ -193,6 +216,105 @@ def restore_rotation_settings(serial, settings, run_adb_command=run_adb):
         )
 
 
+def set_ignore_orientation_request(serial, ignore, run_adb_command=run_adb):
+    run_adb_command(
+        [
+            "shell",
+            "cmd",
+            "window",
+            "set-ignore-orientation-request",
+            "true" if ignore else "false",
+        ],
+        serial=serial,
+    )
+
+
+def set_fix_to_user_rotation(serial, enabled, run_adb_command=run_adb):
+    """Force the display to stay at the user-locked rotation.
+
+    The `cmd window` subcommand for this was renamed from
+    `set-fix-to-user-rotation` to `fixed-to-user-rotation` in newer Android
+    releases (observed on Android 16). Try the modern name first and fall back
+    to the legacy one so this keeps working on older Android/OEM builds too.
+    """
+    value = "enabled" if enabled else "disabled"
+    try:
+        run_adb_command(
+            ["shell", "cmd", "window", "fixed-to-user-rotation", value],
+            serial=serial,
+        )
+    except AdbError as exc:
+        if "Unknown command" not in str(exc):
+            raise
+        run_adb_command(
+            ["shell", "cmd", "window", "set-fix-to-user-rotation", value],
+            serial=serial,
+        )
+
+
+def read_display_rotation(serial, run_adb_command=run_adb):
+    output = run_adb_command(["shell", "dumpsys", "input"], serial=serial)
+    rotation = parse_display_rotation(output)
+    if rotation is not None:
+        return rotation
+
+    output = run_adb_command(["shell", "dumpsys", "window"], serial=serial)
+    return parse_display_rotation(output)
+
+
+def ensure_portrait_orientation(
+    serial,
+    run_adb_command=run_adb,
+    attempts=ENSURE_PORTRAIT_ATTEMPTS,
+    delay=ENSURE_PORTRAIT_RETRY_DELAY_SECONDS,
+    sleep=time.sleep,
+):
+    """Force portrait and verify it actually took effect.
+
+    A landscape reading triggers a retry; an unreadable rotation does not,
+    since dumpsys output formats vary too much across OEMs/Android versions
+    to treat "couldn't parse it" as "it's landscape" without risking pointless
+    retries (and sleeps) on every send.
+    """
+    for attempt in range(attempts):
+        try:
+            force_portrait_orientation(serial, run_adb_command=run_adb_command)
+        except AdbError as exc:
+            print(f"[WARN] Could not force portrait orientation: {exc}")
+
+        try:
+            set_ignore_orientation_request(
+                serial, True, run_adb_command=run_adb_command
+            )
+        except AdbError as exc:
+            print(
+                "[WARN] Could not force WindowManager to ignore app orientation "
+                f"requests: {exc}"
+            )
+
+        try:
+            set_fix_to_user_rotation(serial, True, run_adb_command=run_adb_command)
+        except AdbError as exc:
+            print(f"[WARN] Could not fix WindowManager to the user rotation: {exc}")
+
+        try:
+            rotation = read_display_rotation(serial, run_adb_command=run_adb_command)
+        except AdbError as exc:
+            print(f"[WARN] Could not read display rotation: {exc}")
+            rotation = None
+
+        if rotation is None or rotation not in LANDSCAPE_ROTATIONS:
+            return
+
+        if attempt < attempts - 1:
+            sleep(delay)
+
+    print(
+        "[WARN] Device is still reporting a landscape rotation after "
+        f"{attempts} attempts to force portrait."
+    )
+
+
 @contextmanager
 def portrait_orientation_guard(serial, run_adb_command=run_adb):
     original_settings = None
@@ -204,24 +326,38 @@ def portrait_orientation_guard(serial, run_adb_command=run_adb):
     except AdbError as exc:
         print(f"[WARN] Could not read rotation settings: {exc}")
 
-    try:
-        force_portrait_orientation(serial, run_adb_command=run_adb_command)
-    except AdbError as exc:
-        print(f"[WARN] Could not force portrait orientation: {exc}")
+    ensure_portrait_orientation(serial, run_adb_command=run_adb_command)
 
     try:
         yield
     finally:
-        if original_settings is None:
-            return
+        if original_settings is not None:
+            try:
+                restore_rotation_settings(
+                    serial,
+                    original_settings,
+                    run_adb_command=run_adb_command,
+                )
+            except AdbError as exc:
+                print(f"[WARN] Could not restore rotation settings: {exc}")
+
         try:
-            restore_rotation_settings(
-                serial,
-                original_settings,
-                run_adb_command=run_adb_command,
+            set_ignore_orientation_request(
+                serial, False, run_adb_command=run_adb_command
             )
         except AdbError as exc:
-            print(f"[WARN] Could not restore rotation settings: {exc}")
+            print(
+                "[WARN] Could not restore WindowManager orientation-request "
+                f"handling: {exc}"
+            )
+
+        try:
+            set_fix_to_user_rotation(serial, False, run_adb_command=run_adb_command)
+        except AdbError as exc:
+            print(
+                "[WARN] Could not restore WindowManager fix-to-user-rotation "
+                f"handling: {exc}"
+            )
 
 
 def screen_is_awake(serial, run_adb_command=run_adb):

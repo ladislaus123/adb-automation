@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(adb -s R9XL2027L2T shell cmd window fixed-to-user-rotation default)"
+    ]
+  }
+}

@@ -338,7 +338,9 @@ class WhatsappSendButtonTests(unittest.TestCase):
         with patch(
             "adb_automation.whatsapp.get_whatsapp_package",
             return_value=WHATSAPP_MESSENGER_PACKAGE,
-        ), patch("adb_automation.whatsapp.run_adb") as run_adb, patch(
+        ), patch(
+            "adb_automation.whatsapp.run_adb", return_value=""
+        ) as run_adb, patch(
             "adb_automation.whatsapp.focus_message_entry"
         ) as focus_message_entry, patch(
             "adb_automation.whatsapp.click_send_button"
@@ -372,6 +374,48 @@ class WhatsappSendButtonTests(unittest.TestCase):
                 for command in adb_commands
             )
         )
+
+    def test_send_whatsapp_reasserts_portrait_orientation_before_focusing_entry(self):
+        events = []
+        serial = "192.168.10.21:5555"
+
+        def fake_run_adb(command, serial=None):
+            events.append(tuple(command))
+            return ""
+
+        def fake_focus_message_entry(serial, whatsapp_package):
+            events.append("focus_message_entry")
+            return FakeUiSelector(exists=True)
+
+        with patch(
+            "adb_automation.whatsapp.get_whatsapp_package",
+            return_value=WHATSAPP_MESSENGER_PACKAGE,
+        ), patch(
+            "adb_automation.whatsapp.run_adb", side_effect=fake_run_adb
+        ), patch(
+            "adb_automation.whatsapp.focus_message_entry",
+            side_effect=fake_focus_message_entry,
+        ), patch(
+            "adb_automation.whatsapp.click_send_button"
+        ), patch(
+            "adb_automation.whatsapp.time.sleep"
+        ), patch(
+            "builtins.print"
+        ):
+            whatsapp.send_whatsapp(serial, "5511999999999", text="hi")
+
+        fix_rotation_indexes = [
+            index
+            for index, event in enumerate(events)
+            if event
+            == ("shell", "cmd", "window", "fixed-to-user-rotation", "enabled")
+        ]
+        focus_index = events.index("focus_message_entry")
+
+        # Once from the guard entering, once more as a re-assertion right
+        # before focusing the compose field (the point the bug was observed).
+        self.assertEqual(len(fix_rotation_indexes), 2)
+        self.assertLess(fix_rotation_indexes[-1], focus_index)
 
     def test_send_whatsapp_continues_when_portrait_force_fails(self):
         adb_commands = []
@@ -550,7 +594,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
                 )
 
         self.assertEqual(
-            adb_commands[-2:],
+            adb_commands[-4:],
             [
                 [
                     "shell",
@@ -561,6 +605,8 @@ class WhatsappSendButtonTests(unittest.TestCase):
                     "0",
                 ],
                 ["shell", "settings", "put", "system", "user_rotation", "1"],
+                ["shell", "cmd", "window", "set-ignore-orientation-request", "false"],
+                ["shell", "cmd", "window", "fixed-to-user-rotation", "disabled"],
             ],
         )
 
@@ -568,7 +614,9 @@ class WhatsappSendButtonTests(unittest.TestCase):
         with patch(
             "adb_automation.whatsapp.get_whatsapp_package",
             return_value=WHATSAPP_MESSENGER_PACKAGE,
-        ), patch("adb_automation.whatsapp.run_adb") as run_adb, patch(
+        ), patch(
+            "adb_automation.whatsapp.run_adb", return_value=""
+        ) as run_adb, patch(
             "adb_automation.whatsapp.focus_message_entry",
             side_effect=whatsapp.AutomationError("compose field missing"),
         ), patch(
@@ -698,16 +746,16 @@ class WhatsappSendButtonTests(unittest.TestCase):
             )
         )
 
-    def test_send_whatsapp_audio_uses_appium_media_sender(self):
+    def test_send_whatsapp_audio_uses_gallery_picker_flow(self):
         with tempfile.NamedTemporaryFile(suffix=".mp3") as media_file:
             with patch(
                 "adb_automation.whatsapp.get_whatsapp_package",
                 return_value=WHATSAPP_MESSENGER_PACKAGE,
-            ), patch("adb_automation.whatsapp.run_adb") as run_adb, patch(
+            ), patch("adb_automation.whatsapp.run_adb", return_value=""), patch(
+                "adb_automation.media_picker.send_media_via_gallery_picker"
+            ) as send_media_via_gallery_picker, patch(
                 "adb_automation.whatsapp.click_send_button"
             ) as click_send_button, patch(
-                "adb_automation.whatsapp.send_media_with_appium"
-            ) as send_media_with_appium, patch(
                 "adb_automation.whatsapp.time.sleep"
             ), patch(
                 "builtins.print"
@@ -719,41 +767,26 @@ class WhatsappSendButtonTests(unittest.TestCase):
                     file_path=media_file.name,
                 )
 
-        send_media_with_appium.assert_called_once_with(
+        send_media_via_gallery_picker.assert_called_once_with(
             "192.168.10.21:5555",
             "5511999999999",
             media_file.name,
             WHATSAPP_MESSENGER_PACKAGE,
             text="caption",
             mime_type="audio/mpeg",
-            known_contact=None,
-            adb_transport="wifi",
         )
         click_send_button.assert_not_called()
-        adb_commands = [call.args[0] for call in run_adb.call_args_list]
-        self.assertIn(
-            ["shell", "input", "keyevent", "KEYCODE_WAKEUP"],
-            adb_commands,
-        )
-        self.assertIn(
-            ["shell", "settings", "put", "system", "accelerometer_rotation", "0"],
-            adb_commands,
-        )
-        self.assertIn(
-            ["shell", "settings", "put", "system", "user_rotation", "0"],
-            adb_commands,
-        )
 
-    def test_send_whatsapp_image_uses_appium_media_sender(self):
+    def test_send_whatsapp_image_uses_gallery_picker_flow(self):
         with tempfile.NamedTemporaryFile(suffix=".jpg") as media_file:
             with patch(
                 "adb_automation.whatsapp.get_whatsapp_package",
                 return_value=WHATSAPP_MESSENGER_PACKAGE,
-            ), patch("adb_automation.whatsapp.run_adb") as run_adb, patch(
+            ), patch("adb_automation.whatsapp.run_adb", return_value=""), patch(
+                "adb_automation.media_picker.send_media_via_gallery_picker"
+            ) as send_media_via_gallery_picker, patch(
                 "adb_automation.whatsapp.click_send_button"
             ) as click_send_button, patch(
-                "adb_automation.whatsapp.send_media_with_appium"
-            ) as send_media_with_appium, patch(
                 "builtins.print"
             ):
                 whatsapp.send_whatsapp(
@@ -763,43 +796,28 @@ class WhatsappSendButtonTests(unittest.TestCase):
                     file_path=media_file.name,
                 )
 
-        send_media_with_appium.assert_called_once_with(
+        send_media_via_gallery_picker.assert_called_once_with(
             "192.168.10.21:5555",
             "5511999999999",
             media_file.name,
             WHATSAPP_MESSENGER_PACKAGE,
             text="caption",
             mime_type="image/jpeg",
-            known_contact=None,
-            adb_transport="wifi",
         )
         click_send_button.assert_not_called()
-        adb_commands = [call.args[0] for call in run_adb.call_args_list]
-        self.assertIn(
-            ["shell", "input", "keyevent", "KEYCODE_WAKEUP"],
-            adb_commands,
-        )
-        self.assertIn(
-            ["shell", "settings", "put", "system", "accelerometer_rotation", "0"],
-            adb_commands,
-        )
-        self.assertIn(
-            ["shell", "settings", "put", "system", "user_rotation", "0"],
-            adb_commands,
-        )
 
-    def test_send_whatsapp_video_uses_selected_business_package_with_appium(self):
+    def test_send_whatsapp_video_uses_selected_business_package_with_gallery_picker(self):
         with tempfile.NamedTemporaryFile(suffix=".mp4") as media_file:
             with patch(
                 "adb_automation.whatsapp.get_whatsapp_package",
                 return_value=WHATSAPP_BUSINESS_PACKAGE,
             ) as get_whatsapp_package, patch(
-                "adb_automation.whatsapp.run_adb"
+                "adb_automation.whatsapp.run_adb", return_value=""
             ), patch(
+                "adb_automation.media_picker.send_media_via_gallery_picker"
+            ) as send_media_via_gallery_picker, patch(
                 "adb_automation.whatsapp.click_send_button"
             ) as click_send_button, patch(
-                "adb_automation.whatsapp.send_media_with_appium"
-            ) as send_media_with_appium, patch(
                 "adb_automation.whatsapp.time.sleep"
             ), patch(
                 "builtins.print"
@@ -814,17 +832,67 @@ class WhatsappSendButtonTests(unittest.TestCase):
         get_whatsapp_package.assert_called_once_with(
             "192.168.10.21:5555", business=True
         )
-        send_media_with_appium.assert_called_once_with(
+        send_media_via_gallery_picker.assert_called_once_with(
             "192.168.10.21:5555",
             "5511999999999",
             media_file.name,
             WHATSAPP_BUSINESS_PACKAGE,
             text=None,
             mime_type="video/mp4",
-            known_contact=None,
-            adb_transport="wifi",
         )
         click_send_button.assert_not_called()
+
+    def test_send_whatsapp_document_still_uses_direct_media_intent(self):
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as media_file:
+            with patch(
+                "adb_automation.whatsapp.get_whatsapp_package",
+                return_value=WHATSAPP_MESSENGER_PACKAGE,
+            ), patch(
+                "adb_automation.whatsapp.run_adb", return_value=""
+            ) as run_adb, patch(
+                "adb_automation.whatsapp.click_send_button"
+            ) as click_send_button, patch(
+                "adb_automation.whatsapp.time.sleep"
+            ), patch(
+                "builtins.print"
+            ):
+                whatsapp.send_whatsapp(
+                    "192.168.10.21:5555",
+                    "5511999999999",
+                    text="caption",
+                    file_path=media_file.name,
+                )
+
+        adb_commands = [call.args[0] for call in run_adb.call_args_list]
+        push_commands = [c for c in adb_commands if c[0] == "push"]
+        self.assertEqual(len(push_commands), 1)
+        self.assertEqual(push_commands[0][1], media_file.name)
+        remote_path = push_commands[0][2]
+        self.assertTrue(remote_path.startswith(whatsapp.DEVICE_DOWNLOAD_DIR))
+
+        intent_commands = [
+            c for c in adb_commands if c[:4] == ["shell", "am", "start", "-a"]
+            and "android.intent.action.SEND" in c
+        ]
+        self.assertEqual(len(intent_commands), 1)
+        intent = intent_commands[0]
+        self.assertIn("--grant-read-uri-permission", intent)
+        self.assertIn("jid", intent)
+        self.assertEqual(intent[intent.index("jid") + 1], "5511999999999@s.whatsapp.net")
+        self.assertIn(whatsapp.STREAM_EXTRA, intent)
+        self.assertEqual(
+            intent[intent.index(whatsapp.STREAM_EXTRA) + 1],
+            f"file://{remote_path}",
+        )
+        self.assertIn("android.intent.extra.TEXT", intent)
+        self.assertEqual(intent[intent.index("android.intent.extra.TEXT") + 1], "caption")
+        self.assertIn(WHATSAPP_MESSENGER_PACKAGE, intent)
+
+        click_send_button.assert_called_once_with(
+            "192.168.10.21:5555",
+            WHATSAPP_MESSENGER_PACKAGE,
+            fail_on_contact_picker=True,
+        )
 
 
 if __name__ == "__main__":
