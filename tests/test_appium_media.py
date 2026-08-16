@@ -6,7 +6,7 @@ from unittest.mock import Mock, call, patch
 
 from adb_automation import appium_media
 from adb_automation.config import WHATSAPP_BUSINESS_PACKAGE
-from adb_automation.errors import AutomationError
+from adb_automation.errors import AutomationError, WhatsAppRestrictedError
 
 
 class FakeElement:
@@ -546,6 +546,25 @@ class AppiumMediaUiTests(unittest.TestCase):
                 call(settle),
             ],
         )
+
+    def test_click_direct_media_send_does_not_tap_when_whatsapp_is_restricted(self):
+        with patch(
+            "adb_automation.whatsapp.click_send_button",
+            side_effect=WhatsAppRestrictedError("WhatsApp is restricted."),
+        ), patch(
+            "adb_automation.appium_media.tap_direct_send_fallback"
+        ) as tap_fallback:
+            with self.assertRaisesRegex(
+                WhatsAppRestrictedError,
+                "^WhatsApp is restricted\\.$",
+            ):
+                appium_media.click_direct_media_send(
+                    "serial",
+                    WHATSAPP_BUSINESS_PACKAGE,
+                    sleep=lambda seconds: None,
+                )
+
+        tap_fallback.assert_not_called()
 
     def test_recover_appium_level_3_skips_wifi_connect_for_usb(self):
         commands = []

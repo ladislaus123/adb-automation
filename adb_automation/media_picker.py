@@ -1,7 +1,13 @@
 import time
 
 from .adb import run_adb
-from .adb_ui import click_first, tap_element, wait_for_first
+from .adb_ui import (
+    click_first,
+    dump_ui_xml,
+    parse_ui_dump,
+    tap_element,
+    wait_for_first,
+)
 from .appium_media import (
     attach_selectors,
     caption_selectors,
@@ -12,7 +18,7 @@ from .appium_media import (
     send_selectors,
     stage_latest_media,
 )
-from .errors import AutomationError
+from .errors import AutomationError, WhatsAppRestrictedError
 
 ATTACH_TIMEOUT_SECONDS = 6
 MEDIA_ITEM_TIMEOUT_SECONDS = 6
@@ -23,6 +29,31 @@ WAIT_AFTER_ATTACH_SECONDS = 1.5
 WAIT_AFTER_SELECT_MEDIA_SECONDS = 2
 WAIT_AFTER_SEND_SECONDS = 2
 CAPTION_FOCUS_SETTLE_SECONDS = 0.4
+
+
+def ui_dump_has_whatsapp_restricted_text(xml_text):
+    from .whatsapp import text_matches_whatsapp_restricted
+
+    try:
+        elements = parse_ui_dump(xml_text)
+    except AutomationError:
+        return False
+
+    return any(
+        text_matches_whatsapp_restricted(element.get(field))
+        for element in elements
+        for field in ("text", "content_desc")
+    )
+
+
+def raise_if_whatsapp_restricted_dump(serial, run_adb_command=run_adb):
+    try:
+        xml_text = dump_ui_xml(serial, run_adb_command=run_adb_command)
+    except Exception:
+        return
+
+    if ui_dump_has_whatsapp_restricted_text(xml_text):
+        raise WhatsAppRestrictedError("WhatsApp is restricted.")
 
 
 def _type_caption(serial, caption, run_adb_command=run_adb):
@@ -55,6 +86,10 @@ def select_latest_media_from_attach_menu(
         sleep=sleep,
     )
     if not attached:
+        raise_if_whatsapp_restricted_dump(
+            serial,
+            run_adb_command=run_adb_command,
+        )
         raise AutomationError("Attach button not found.")
     sleep(WAIT_AFTER_ATTACH_SECONDS)
 
@@ -84,6 +119,10 @@ def select_latest_media_from_attach_menu(
             )
 
     if not selected:
+        raise_if_whatsapp_restricted_dump(
+            serial,
+            run_adb_command=run_adb_command,
+        )
         raise AutomationError(
             "No media_item_view found. The media strip is not visible or "
             "WhatsApp did not index the pushed media."
@@ -121,6 +160,10 @@ def enter_caption_and_send(
         sleep=sleep,
     )
     if not sent:
+        raise_if_whatsapp_restricted_dump(
+            serial,
+            run_adb_command=run_adb_command,
+        )
         raise AutomationError("Send button not found after selecting media.")
     sleep(WAIT_AFTER_SEND_SECONDS)
 

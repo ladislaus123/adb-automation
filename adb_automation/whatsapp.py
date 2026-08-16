@@ -5,7 +5,11 @@ import urllib.parse
 
 from .adb import ensure_portrait_orientation, portrait_orientation_guard, run_adb
 from .config import STREAM_EXTRA, WHATSAPP_BUSINESS_PACKAGE, WHATSAPP_PACKAGES
-from .errors import AutomationError
+from .errors import (
+    AutomationError,
+    WhatsAppNotInstalledError,
+    WhatsAppRestrictedError,
+)
 
 SEND_BUTTON_RESOURCE_NAME = "send"
 SEND_BUTTON_DESCRIPTIONS = (
@@ -19,6 +23,12 @@ DEVICE_DOWNLOAD_DIR = "/storage/emulated/0/Download"
 CONTACT_PICKER_TEXTS = (
     "Send to",
     "Enviar para",
+)
+WHATSAPP_RESTRICTED_TEXTS = (
+    "Sua conta foi restringida",
+    "conta foi restringida",
+    "Unable to use WhatsApp",
+    "unable to use whatsapp",
 )
 HUMAN_TYPE_BURST_SIZES = (3, 4, 2, 5, 3, 6)
 HUMAN_TYPE_PAUSE_SECONDS = 0.35
@@ -123,6 +133,25 @@ def contact_picker_selectors():
     )
 
 
+def whatsapp_restricted_selectors():
+    return (
+        *({"text": text} for text in WHATSAPP_RESTRICTED_TEXTS),
+        *({"textContains": text} for text in WHATSAPP_RESTRICTED_TEXTS),
+        *({"description": text} for text in WHATSAPP_RESTRICTED_TEXTS),
+        *({"descriptionContains": text} for text in WHATSAPP_RESTRICTED_TEXTS),
+    )
+
+
+def text_matches_whatsapp_restricted(text):
+    normalized_text = " ".join(str(text or "").split()).casefold()
+    if not normalized_text:
+        return False
+    return any(
+        " ".join(restricted_text.split()).casefold() in normalized_text
+        for restricted_text in WHATSAPP_RESTRICTED_TEXTS
+    )
+
+
 def selector_exists(selector):
     exists = getattr(selector, "exists", False)
     if callable(exists):
@@ -149,6 +178,21 @@ def is_contact_picker_visible(device):
     return False
 
 
+def is_whatsapp_restricted_visible(device):
+    for selector_kwargs in whatsapp_restricted_selectors():
+        try:
+            if selector_exists(device(**selector_kwargs)):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def raise_if_whatsapp_restricted(device):
+    if is_whatsapp_restricted_visible(device):
+        raise WhatsAppRestrictedError("WhatsApp is restricted.")
+
+
 def focus_message_entry(
     serial,
     whatsapp_package,
@@ -164,6 +208,8 @@ def focus_message_entry(
     last_error = None
 
     while True:
+        raise_if_whatsapp_restricted(device)
+
         for selector_kwargs in message_entry_selectors(whatsapp_package):
             try:
                 selector = device(**selector_kwargs)
@@ -178,6 +224,7 @@ def focus_message_entry(
             break
         time.sleep(0.25)
 
+    raise_if_whatsapp_restricted(device)
     details = (
         f" Last uiautomator2 error: {last_error}"
         if last_error is not None
@@ -205,6 +252,8 @@ def click_send_button(
     last_error = None
 
     while True:
+        raise_if_whatsapp_restricted(device)
+
         if fail_on_contact_picker:
             try:
                 if is_contact_picker_visible(device):
@@ -230,6 +279,7 @@ def click_send_button(
             break
         time.sleep(0.25)
 
+    raise_if_whatsapp_restricted(device)
     details = (
         f" Last uiautomator2 error: {last_error}"
         if last_error is not None
@@ -252,6 +302,8 @@ def click_send_button_with_keyboard_fallback(
             fail_on_contact_picker=fail_on_contact_picker,
         )
         return
+    except WhatsAppRestrictedError:
+        raise
     except AutomationError as exc:
         if fail_on_contact_picker:
             raise
@@ -554,10 +606,12 @@ def send_whatsapp(
     whatsapp_package = get_whatsapp_package(serial, business=business)
     if not whatsapp_package:
         if business:
-            raise AutomationError(
+            raise WhatsAppNotInstalledError(
                 "WhatsApp Business is not installed. Expected com.whatsapp.w4b."
             )
-        raise AutomationError("WhatsApp is not installed. Expected com.whatsapp.")
+        raise WhatsAppNotInstalledError(
+            "WhatsApp is not installed. Expected com.whatsapp."
+        )
     print(f"[*] Using WhatsApp package: {whatsapp_package}")
 
     if file_path and not os.path.exists(file_path):
@@ -610,6 +664,8 @@ def send_whatsapp(
             print("[*] Focusing WhatsApp message field...")
             try:
                 message_entry = focus_message_entry(serial, whatsapp_package)
+            except WhatsAppRestrictedError:
+                raise
             except AutomationError as exc:
                 print(f"[WARN] {exc}")
                 launch_whatsapp_prefilled_text(serial, phone, text, whatsapp_package)
@@ -619,6 +675,8 @@ def send_whatsapp(
                 print("[*] Typing message with human-like pacing...")
                 try:
                     human_type_text(serial, text, message_entry=message_entry)
+                except WhatsAppRestrictedError:
+                    raise
                 except AutomationError as exc:
                     print(f"[WARN] Human-like typing failed; falling back: {exc}")
                     clear_message_draft(serial, text)

@@ -138,6 +138,31 @@ class WhatsappPackageTests(unittest.TestCase):
 
         self.assertIsNone(package)
 
+    def test_send_whatsapp_raises_specific_error_when_regular_is_not_installed(self):
+        with patch("adb_automation.whatsapp.get_whatsapp_package", return_value=None):
+            with self.assertRaisesRegex(
+                whatsapp.WhatsAppNotInstalledError,
+                "WhatsApp is not installed",
+            ):
+                whatsapp.send_whatsapp(
+                    "192.168.10.21:5555",
+                    "5511999999999",
+                    text="hello",
+                )
+
+    def test_send_whatsapp_raises_specific_error_when_business_is_not_installed(self):
+        with patch("adb_automation.whatsapp.get_whatsapp_package", return_value=None):
+            with self.assertRaisesRegex(
+                whatsapp.WhatsAppNotInstalledError,
+                "WhatsApp Business is not installed",
+            ):
+                whatsapp.send_whatsapp(
+                    "192.168.10.21:5555",
+                    "5511999999999",
+                    text="hello",
+                    business=True,
+                )
+
 
 class WhatsappSendButtonTests(unittest.TestCase):
     def test_click_send_button_prefers_resource_id(self):
@@ -202,6 +227,61 @@ class WhatsappSendButtonTests(unittest.TestCase):
                 fail_on_contact_picker=True,
                 device_connector=lambda serial: device,
             )
+
+    def test_click_send_button_raises_restricted_for_portuguese_banner(self):
+        device = FakeUiDevice()
+        device.add_selector({"text": "Sua conta foi restringida"})
+
+        with self.assertRaisesRegex(
+            whatsapp.WhatsAppRestrictedError,
+            "^WhatsApp is restricted\\.$",
+        ):
+            whatsapp.click_send_button(
+                "192.168.10.21:5555",
+                WHATSAPP_MESSENGER_PACKAGE,
+                timeout=0,
+                device_connector=lambda serial: device,
+            )
+
+    def test_click_send_button_raises_restricted_for_english_popup(self):
+        device = FakeUiDevice()
+        device.add_selector({"descriptionContains": "Unable to use WhatsApp"})
+
+        with self.assertRaisesRegex(
+            whatsapp.WhatsAppRestrictedError,
+            "^WhatsApp is restricted\\.$",
+        ):
+            whatsapp.click_send_button(
+                "192.168.10.21:5555",
+                WHATSAPP_MESSENGER_PACKAGE,
+                timeout=0,
+                device_connector=lambda serial: device,
+            )
+
+    def test_click_send_button_keyboard_fallback_does_not_retry_when_restricted(self):
+        with patch(
+            "adb_automation.whatsapp.click_send_button",
+            side_effect=whatsapp.WhatsAppRestrictedError(
+                "WhatsApp is restricted."
+            ),
+        ) as click_send_button, patch(
+            "adb_automation.whatsapp.run_adb"
+        ) as run_adb:
+            with self.assertRaisesRegex(
+                whatsapp.WhatsAppRestrictedError,
+                "^WhatsApp is restricted\\.$",
+            ):
+                whatsapp.click_send_button_with_keyboard_fallback(
+                    "192.168.10.21:5555",
+                    WHATSAPP_MESSENGER_PACKAGE,
+                )
+
+        click_send_button.assert_called_once_with(
+            "192.168.10.21:5555",
+            WHATSAPP_MESSENGER_PACKAGE,
+            fail_on_contact_picker=False,
+        )
+        run_adb.assert_not_called()
 
     def test_focus_message_entry_prefers_resource_id(self):
         device = FakeUiDevice()
@@ -644,6 +724,39 @@ class WhatsappSendButtonTests(unittest.TestCase):
             ],
         )
         self.assertEqual(replay_adb_text_buffer(adb_commands), "")
+
+    def test_send_whatsapp_does_not_prefilled_fallback_when_entry_is_restricted(self):
+        with patch(
+            "adb_automation.whatsapp.get_whatsapp_package",
+            return_value=WHATSAPP_MESSENGER_PACKAGE,
+        ), patch(
+            "adb_automation.whatsapp.run_adb", return_value=""
+        ), patch(
+            "adb_automation.whatsapp.focus_message_entry",
+            side_effect=whatsapp.WhatsAppRestrictedError(
+                "WhatsApp is restricted."
+            ),
+        ), patch(
+            "adb_automation.whatsapp.launch_whatsapp_prefilled_text"
+        ) as launch_whatsapp_prefilled_text, patch(
+            "adb_automation.whatsapp.click_send_button"
+        ) as click_send_button, patch(
+            "adb_automation.whatsapp.time.sleep"
+        ), patch(
+            "builtins.print"
+        ):
+            with self.assertRaisesRegex(
+                whatsapp.WhatsAppRestrictedError,
+                "^WhatsApp is restricted\\.$",
+            ):
+                whatsapp.send_whatsapp(
+                    "192.168.10.21:5555",
+                    "5511999999999",
+                    text="hello there",
+                )
+
+        launch_whatsapp_prefilled_text.assert_not_called()
+        click_send_button.assert_not_called()
 
     def test_send_whatsapp_falls_back_to_prefilled_url_when_typing_fails(self):
         adb_commands = []

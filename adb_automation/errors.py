@@ -8,3 +8,11 @@ class AdbError(AutomationError):
 
 class DeviceLockError(AutomationError):
     """Raised when a requested device is locked by another worker."""
+
+
+class WhatsAppRestrictedError(AutomationError):
+    """Raised when WhatsApp reports the account cannot currently send."""
+
+
+class WhatsAppNotInstalledError(AutomationError):
+    """Raised when the requested WhatsApp package is not installed."""

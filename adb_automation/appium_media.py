@@ -16,7 +16,7 @@ from .config import (
     env_bool,
     env_int,
 )
-from .errors import AutomationError
+from .errors import AutomationError, WhatsAppRestrictedError
 
 DEVICE_CAMERA_DIR = "/sdcard/DCIM/Camera"
 WAIT_AFTER_PUSH = 2
@@ -854,6 +854,8 @@ def click_direct_media_send(
             whatsapp_package,
             fail_on_contact_picker=True,
         )
+    except WhatsAppRestrictedError:
+        raise
     except AutomationError as exc:
         if "contact picker" in str(exc).lower():
             raise

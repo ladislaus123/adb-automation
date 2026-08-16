@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from adb_automation import media_picker
-from adb_automation.errors import AutomationError
+from adb_automation.errors import AutomationError, WhatsAppRestrictedError
 
 WHATSAPP_PACKAGE = "com.whatsapp"
 ATTACH_DUMP = """<hierarchy>
@@ -26,6 +26,10 @@ CAPTION_DUMP = """<hierarchy>
 </hierarchy>
 """
 EMPTY_DUMP = "<hierarchy></hierarchy>"
+RESTRICTED_DUMP = """<hierarchy>
+  <node text="Sua conta foi restringida" content-desc="" bounds="[0,0][100,100]" />
+</hierarchy>
+"""
 
 
 def scripted_dump(sequence):
@@ -81,6 +85,22 @@ class SelectLatestMediaFromAttachMenuTests(unittest.TestCase):
                     sleep=lambda seconds: None,
                 )
 
+    def test_raises_restricted_when_attach_button_is_hidden_by_restricted_screen(self):
+        run_adb = scripted_dump([RESTRICTED_DUMP, RESTRICTED_DUMP])
+
+        with patch("adb_automation.media_picker.ATTACH_TIMEOUT_SECONDS", 0):
+            with self.assertRaisesRegex(
+                WhatsAppRestrictedError,
+                "^WhatsApp is restricted\\.$",
+            ):
+                media_picker.select_latest_media_from_attach_menu(
+                    "serial",
+                    WHATSAPP_PACKAGE,
+                    mime_type="image/jpeg",
+                    run_adb_command=run_adb,
+                    sleep=lambda seconds: None,
+                )
+
     def test_raises_when_no_media_item_found_anywhere(self):
         run_adb = scripted_dump([ATTACH_DUMP, EMPTY_DUMP, EMPTY_DUMP])
 
@@ -88,6 +108,26 @@ class SelectLatestMediaFromAttachMenuTests(unittest.TestCase):
             "adb_automation.media_picker.MEDIA_ITEM_TIMEOUT_SECONDS", 0.01
         ), patch("adb_automation.media_picker.SOURCE_TIMEOUT_SECONDS", 0.01):
             with self.assertRaisesRegex(AutomationError, "No media_item_view found"):
+                media_picker.select_latest_media_from_attach_menu(
+                    "serial",
+                    WHATSAPP_PACKAGE,
+                    mime_type="audio/mpeg",
+                    run_adb_command=run_adb,
+                    sleep=lambda seconds: None,
+                )
+
+    def test_raises_restricted_when_media_strip_is_hidden_by_restricted_screen(self):
+        run_adb = scripted_dump(
+            [ATTACH_DUMP, RESTRICTED_DUMP, RESTRICTED_DUMP, RESTRICTED_DUMP]
+        )
+
+        with patch(
+            "adb_automation.media_picker.MEDIA_ITEM_TIMEOUT_SECONDS", 0
+        ), patch("adb_automation.media_picker.SOURCE_TIMEOUT_SECONDS", 0):
+            with self.assertRaisesRegex(
+                WhatsAppRestrictedError,
+                "^WhatsApp is restricted\\.$",
+            ):
                 media_picker.select_latest_media_from_attach_menu(
                     "serial",
                     WHATSAPP_PACKAGE,
@@ -175,6 +215,22 @@ class EnterCaptionAndSendTests(unittest.TestCase):
                 run_adb_command=run_adb,
                 sleep=lambda seconds: None,
             )
+
+    def test_raises_restricted_when_send_button_is_hidden_by_restricted_screen(self):
+        run_adb = scripted_dump([RESTRICTED_DUMP, RESTRICTED_DUMP])
+
+        with patch("adb_automation.media_picker.SEND_TIMEOUT_SECONDS", 0):
+            with self.assertRaisesRegex(
+                WhatsAppRestrictedError,
+                "^WhatsApp is restricted\\.$",
+            ):
+                media_picker.enter_caption_and_send(
+                    "serial",
+                    WHATSAPP_PACKAGE,
+                    caption=None,
+                    run_adb_command=run_adb,
+                    sleep=lambda seconds: None,
+                )
 
 
 class SendMediaViaGalleryPickerTests(unittest.TestCase):
