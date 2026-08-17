@@ -1,7 +1,38 @@
 {
   "permissions": {
     "allow": [
-      "Bash(adb -s R9XL2027L2T shell cmd window fixed-to-user-rotation default)"
+      "Bash(adb -s R9XL2027L2T shell cmd window fixed-to-user-rotation default)",
+      "Bash(git status *)",
+      "Bash(powershell -Command \"Get-ChildItem debug_nav_*.xml, debug_attach_not_found.xml, debug_media_item_not_found.xml, debug_send_not_found.xml -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object Name, LastWriteTime\")",
+      "Bash(powershell -Command \"Get-ChildItem debug_*.xml -ErrorAction SilentlyContinue | Select-Object Name, LastWriteTime, Length\")",
+      "Bash(adb devices *)",
+      "Bash(python -m pytest tests/test_media_picker.py tests/test_appium_media.py -q)",
+      "Bash(python -m venv --help)",
+      "Bash(pip show *)",
+      "Bash(where python *)",
+      "Bash(pip install *)",
+      "Bash(python -m pytest -q)",
+      "Bash(python -c ' *)",
+      "Bash(python3 -)",
+      "Bash(adb -s R9XL3034S8J shell ps)",
+      "Bash(adb -s R9XL3034S8J shell dumpsys activity service com.github.uiautomator)",
+      "Bash(adb -s R9XL3034S8J shell pm list packages)",
+      "Bash(adb -s R9XL3034S8J shell uiautomator dump /sdcard/window_dump.xml)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(adb -s R9XL3034S8J shell dumpsys power)",
+      "Bash(adb -s R9XL3034S8J shell dumpsys window)",
+      "Bash(adb -s R9XL3034S8J shell dumpsys activity activities)",
+      "Bash(adb -s R9XL3034S8J shell uiautomator dump)",
+      "Bash(echo \"EXIT2:$?\")",
+      "Bash(adb -s R9XL3034S8J shell getprop ro.build.version.release)",
+      "Bash(adb -s R9XL3034S8J shell getprop ro.build.version.sdk)",
+      "Bash(adb -s R9XL3034S8J logcat -c)",
+      "Bash(adb -s R9XL3034S8J shell \"ps -A 2>/dev/null | grep -E '20950|6546'\")",
+      "Bash(adb -s R9XL3034S8J shell \"dumpsys package com.github.uiautomator 2>&1 | head -5\")",
+      "Bash(adb -s R9XL3034S8J shell \"kill -9 20950\")",
+      "Bash(adb -s R9XL3034S8J shell cat /sdcard/window_dump.xml)",
+      "Bash(adb -s R9XL3034S8J shell \"ps -A 2>/dev/null | grep app_process\")",
+      "Bash(python -m pytest tests/test_media_picker.py -q)"
     ]
   }
 }

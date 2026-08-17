@@ -14,6 +14,22 @@ def dump_ui_xml(serial, run_adb_command=run_adb):
     return run_adb_command(["shell", "cat", DUMP_REMOTE_PATH], serial=serial)
 
 
+def clear_stale_uiautomation(serial, run_adb_command=run_adb):
+    """Kill any process still holding the on-device UiAutomation connection.
+
+    `uiautomator dump` needs to register its own UiAutomation session; a
+    leftover uiautomator2/Appium instrumentation process from an earlier
+    session (which can run as a bare `app_process`, not an installed
+    package) makes every dump crash with "UiAutomationService ... already
+    registered!" and exit non-zero with no output at all. Best-effort:
+    there may be nothing to kill.
+    """
+    try:
+        run_adb_command(["shell", "pkill", "-f", "uiautomator"], serial=serial)
+    except AutomationError:
+        pass
+
+
 def parse_bounds(bounds):
     match = BOUNDS_PATTERN.match(bounds or "")
     if not match:

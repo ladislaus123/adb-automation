@@ -2,6 +2,7 @@ import time
 
 from .adb import run_adb
 from .adb_ui import (
+    clear_stale_uiautomation,
     click_first,
     dump_ui_xml,
     parse_ui_dump,
@@ -78,6 +79,12 @@ def select_latest_media_from_attach_menu(
     run_adb_command=run_adb,
     sleep=time.sleep,
 ):
+    # A leftover uiautomator2/Appium instrumentation process from a prior job
+    # on this device (e.g. a text send) keeps the on-device UiAutomation
+    # connection registered, so every `uiautomator dump` below would crash
+    # with no output instead of returning the UI tree.
+    clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
+
     attached = click_first(
         serial,
         attach_selectors(whatsapp_package),

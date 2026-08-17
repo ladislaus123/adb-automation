@@ -59,6 +59,29 @@ class SelectLatestMediaFromAttachMenuTests(unittest.TestCase):
             sleep=lambda seconds: None,
         )
 
+    def test_clears_stale_uiautomation_before_interacting(self):
+        commands = []
+
+        def run_adb(command, serial=None):
+            commands.append(command)
+            if command[:2] == ["shell", "uiautomator"]:
+                return ""
+            if command[:2] == ["shell", "cat"]:
+                return ATTACH_DUMP if len(
+                    [c for c in commands if c[:2] == ["shell", "cat"]]
+                ) == 1 else MEDIA_STRIP_DUMP
+            return ""
+
+        media_picker.select_latest_media_from_attach_menu(
+            "serial",
+            WHATSAPP_PACKAGE,
+            mime_type="image/jpeg",
+            run_adb_command=run_adb,
+            sleep=lambda seconds: None,
+        )
+
+        self.assertEqual(commands[0], ["shell", "pkill", "-f", "uiautomator"])
+
     def test_falls_back_to_gallery_source_when_media_strip_missing(self):
         run_adb = scripted_dump(
             [ATTACH_DUMP, EMPTY_DUMP, GALLERY_OPTION_DUMP, MEDIA_STRIP_DUMP]
