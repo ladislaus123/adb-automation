@@ -98,7 +98,9 @@ class SelectLatestMediaFromAttachMenuTests(unittest.TestCase):
     def test_raises_when_attach_button_not_found(self):
         run_adb = scripted_dump([EMPTY_DUMP])
 
-        with patch("adb_automation.media_picker.ATTACH_TIMEOUT_SECONDS", 0.01):
+        with patch("adb_automation.media_picker.ATTACH_TIMEOUT_SECONDS", 0.01), patch(
+            "adb_automation.media_picker.capture_debug_ui_dump"
+        ) as capture_debug_ui_dump:
             with self.assertRaisesRegex(AutomationError, "Attach button not found"):
                 media_picker.select_latest_media_from_attach_menu(
                     "serial",
@@ -107,6 +109,7 @@ class SelectLatestMediaFromAttachMenuTests(unittest.TestCase):
                     run_adb_command=run_adb,
                     sleep=lambda seconds: None,
                 )
+        capture_debug_ui_dump.assert_called_once()
 
     def test_raises_restricted_when_attach_button_is_hidden_by_restricted_screen(self):
         run_adb = scripted_dump([RESTRICTED_DUMP, RESTRICTED_DUMP])
@@ -266,6 +269,8 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
         ) as stage_latest_media, patch(
             "adb_automation.media_picker.open_whatsapp_chat"
         ) as open_whatsapp_chat, patch(
+            "adb_automation.media_picker.verify_whatsapp_chat_ready"
+        ) as verify_whatsapp_chat_ready, patch(
             "adb_automation.media_picker.select_latest_media_from_attach_menu"
         ) as select_latest_media_from_attach_menu, patch(
             "adb_automation.media_picker.enter_caption_and_send"
@@ -285,6 +290,7 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
 
         stage_latest_media.assert_called_once()
         open_whatsapp_chat.assert_called_once()
+        verify_whatsapp_chat_ready.assert_called_once()
         select_latest_media_from_attach_menu.assert_called_once()
         enter_caption_and_send.assert_called_once()
         cleanup_staged_media.assert_called_once_with(
@@ -297,6 +303,8 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
             return_value="/sdcard/DCIM/Camera/IMG_1.jpg",
         ), patch(
             "adb_automation.media_picker.open_whatsapp_chat"
+        ), patch(
+            "adb_automation.media_picker.verify_whatsapp_chat_ready"
         ), patch(
             "adb_automation.media_picker.select_latest_media_from_attach_menu",
             side_effect=AutomationError("Attach button not found."),
@@ -314,6 +322,34 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
                     mime_type="image/jpeg",
                 )
 
+        cleanup_staged_media.assert_called_once()
+
+    def test_reports_when_chat_does_not_open_before_attach_flow(self):
+        with patch(
+            "adb_automation.media_picker.stage_latest_media",
+            return_value="/sdcard/DCIM/Camera/IMG_1.jpg",
+        ), patch(
+            "adb_automation.media_picker.open_whatsapp_chat"
+        ), patch(
+            "adb_automation.media_picker.verify_whatsapp_chat_ready",
+            side_effect=AutomationError("WhatsApp chat did not open"),
+        ), patch(
+            "adb_automation.media_picker.select_latest_media_from_attach_menu"
+        ) as select_latest_media_from_attach_menu, patch(
+            "adb_automation.media_picker.cleanup_staged_media"
+        ) as cleanup_staged_media, patch(
+            "builtins.print"
+        ):
+            with self.assertRaisesRegex(AutomationError, "WhatsApp chat did not open"):
+                media_picker.send_media_via_gallery_picker(
+                    "serial",
+                    "5511999999999",
+                    "/tmp/photo.jpg",
+                    WHATSAPP_PACKAGE,
+                    mime_type="image/jpeg",
+                )
+
+        select_latest_media_from_attach_menu.assert_not_called()
         cleanup_staged_media.assert_called_once()
 
 

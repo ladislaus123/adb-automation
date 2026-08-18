@@ -30,6 +30,9 @@ WAIT_AFTER_ATTACH_SECONDS = 1.5
 WAIT_AFTER_SELECT_MEDIA_SECONDS = 2
 WAIT_AFTER_SEND_SECONDS = 2
 CAPTION_FOCUS_SETTLE_SECONDS = 0.4
+CHAT_READY_TIMEOUT_SECONDS = 4
+ATTACH_NOT_FOUND_DUMP = "debug_attach_not_found.xml"
+CHAT_NOT_READY_DUMP = "debug_chat_not_ready.xml"
 
 
 def ui_dump_has_whatsapp_restricted_text(xml_text):
@@ -55,6 +58,75 @@ def raise_if_whatsapp_restricted_dump(serial, run_adb_command=run_adb):
 
     if ui_dump_has_whatsapp_restricted_text(xml_text):
         raise WhatsAppRestrictedError("WhatsApp is restricted.")
+
+
+def chat_entry_selectors(whatsapp_package):
+    return (
+        ("id", f"{whatsapp_package}:id/entry"),
+        ("id", f"{whatsapp_package}:id/mentionable_entry"),
+    )
+
+
+def capture_debug_ui_dump(serial, filename, run_adb_command=run_adb):
+    if not filename:
+        return
+
+    try:
+        xml_text = dump_ui_xml(serial, run_adb_command=run_adb_command)
+        with open(filename, "w", encoding="utf-8") as output:
+            output.write(xml_text)
+        print(f"[DEBUG] UI dumped to {filename}")
+    except Exception as exc:
+        print(f"[WARN] Could not capture UI dump {filename}: {exc}")
+
+
+def foreground_window_summary(serial, run_adb_command=run_adb):
+    try:
+        output = run_adb_command(["shell", "dumpsys", "window"], serial=serial)
+    except Exception as exc:
+        return f"Could not read foreground window state: {exc}"
+
+    interesting = []
+    for line in str(output or "").splitlines():
+        if any(
+            marker in line
+            for marker in (
+                "screenState",
+                "mDreamingLockscreen",
+                "mCurrentFocus",
+                "mFocusedApp",
+            )
+        ):
+            interesting.append(line.strip())
+    return "; ".join(interesting) or "Foreground window state unavailable."
+
+
+def verify_whatsapp_chat_ready(
+    serial,
+    whatsapp_package,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+):
+    entry = wait_for_first(
+        serial,
+        chat_entry_selectors(whatsapp_package),
+        timeout=CHAT_READY_TIMEOUT_SECONDS,
+        run_adb_command=run_adb_command,
+        sleep=sleep,
+    )
+    if entry is not None:
+        return
+
+    raise_if_whatsapp_restricted_dump(serial, run_adb_command=run_adb_command)
+    capture_debug_ui_dump(
+        serial,
+        CHAT_NOT_READY_DUMP,
+        run_adb_command=run_adb_command,
+    )
+    raise AutomationError(
+        "WhatsApp chat did not open; compose field not found. "
+        + foreground_window_summary(serial, run_adb_command=run_adb_command)
+    )
 
 
 def _type_caption(serial, caption, run_adb_command=run_adb):
@@ -95,6 +167,11 @@ def select_latest_media_from_attach_menu(
     if not attached:
         raise_if_whatsapp_restricted_dump(
             serial,
+            run_adb_command=run_adb_command,
+        )
+        capture_debug_ui_dump(
+            serial,
+            ATTACH_NOT_FOUND_DUMP,
             run_adb_command=run_adb_command,
         )
         raise AutomationError("Attach button not found.")
@@ -199,6 +276,12 @@ def send_media_via_gallery_picker(
             phone,
             whatsapp_package,
             run_adb_command=run_adb_command,
+        )
+        verify_whatsapp_chat_ready(
+            serial,
+            whatsapp_package,
+            run_adb_command=run_adb_command,
+            sleep=sleep,
         )
         select_latest_media_from_attach_menu(
             serial,

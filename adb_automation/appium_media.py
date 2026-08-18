@@ -12,6 +12,8 @@ from .config import (
     APPIUM_SERVER_ENV_VAR,
     APPIUM_SETTLE_SECONDS_ENV_VAR,
     DEFAULT_APPIUM_SERVER,
+    MEDIA_INDEX_POLL_INTERVAL_ENV_VAR,
+    MEDIA_INDEX_TIMEOUT_ENV_VAR,
     STREAM_EXTRA,
     env_bool,
     env_int,
@@ -170,6 +172,17 @@ def is_wifi_transport(adb_transport):
     return str(adb_transport or "wifi").strip().lower() == "wifi"
 
 
+def media_index_timeout_seconds():
+    return env_int(MEDIA_INDEX_TIMEOUT_ENV_VAR, MEDIA_INDEX_TIMEOUT_SECONDS)
+
+
+def media_index_poll_interval_seconds():
+    return env_int(
+        MEDIA_INDEX_POLL_INTERVAL_ENV_VAR,
+        MEDIA_INDEX_POLL_INTERVAL_SECONDS,
+    )
+
+
 def cleanup_staged_media(serial, remote_path, run_adb_command=run_adb):
     if not remote_path:
         return
@@ -211,32 +224,68 @@ def broadcast_media_scan(serial, remote_path, run_adb_command=run_adb):
     )
 
 
+def query_media_store(serial, run_adb_command=run_adb):
+    return run_adb_command(
+        [
+            "shell",
+            "content",
+            "query",
+            "--uri",
+            "content://media/external/file",
+            "--projection",
+            "_id:_display_name:relative_path",
+        ],
+        serial=serial,
+    )
+
+
+def media_store_output_has_filename(output, filename):
+    text = str(output or "")
+    return f"_display_name={filename}" in text
+
+
 def media_is_indexed(serial, remote_path, run_adb_command=run_adb):
-    # Match on the (unique, timestamped) display name rather than _data:
-    # MediaStore stores the canonical /storage/emulated/0/... path while we
-    # push via the /sdcard/... symlink, so a _data match would spuriously fail.
-    filename = Path(remote_path).name
     try:
-        output = run_adb_command(
-            [
-                "shell",
-                "content",
-                "query",
-                "--uri",
-                "content://media/external/file",
-                "--projection",
-                "_id:_display_name",
-                "--where",
-                f"_display_name='{filename}'",
-            ],
-            serial=serial,
-        )
+        output = query_media_store(serial, run_adb_command=run_adb_command)
     except Exception as exc:
         print(f"[WARN] MediaStore index query failed: {exc}")
         return False
 
-    text = str(output or "")
-    return "_id=" in text or text.strip().startswith("Row:")
+    return media_store_output_has_filename(output, Path(remote_path).name)
+
+
+def log_media_index_debug(serial, remote_path, run_adb_command=run_adb):
+    print(f"[DEBUG] Remote media file state for {remote_path}:")
+    file_state = run_best_effort_adb(
+        ["shell", "ls", "-l", remote_path],
+        serial,
+        run_adb_command=run_adb_command,
+    )
+    if file_state is not None:
+        print(str(file_state).strip() or "<empty>")
+
+    try:
+        output = query_media_store(serial, run_adb_command=run_adb_command)
+    except Exception as exc:
+        print(f"[DEBUG] MediaStore query failed while debugging index: {exc}")
+        return
+
+    filename = Path(remote_path).name
+    matching_lines = [
+        line
+        for line in str(output or "").splitlines()
+        if f"_display_name={filename}" in line
+    ]
+    if matching_lines:
+        print("[DEBUG] Matching MediaStore rows:")
+        for line in matching_lines[:5]:
+            print(line)
+        return
+
+    rows = str(output or "").splitlines()
+    print("[DEBUG] MediaStore rows did not include the staged file. Recent rows:")
+    for line in rows[:10]:
+        print(line)
 
 
 def wait_for_media_indexed(
@@ -259,6 +308,7 @@ def wait_for_media_indexed(
     print(
         f"[WARN] Media not confirmed in the gallery index after {timeout}s: {remote_path}"
     )
+    log_media_index_debug(serial, remote_path, run_adb_command=run_adb_command)
     return False
 
 
@@ -279,8 +329,8 @@ def stage_latest_media(
     remove_local_file=remove_file_if_exists,
     wait_after_push=WAIT_AFTER_PUSH,
     sleep=time.sleep,
-    index_timeout=MEDIA_INDEX_TIMEOUT_SECONDS,
-    index_interval=MEDIA_INDEX_POLL_INTERVAL_SECONDS,
+    index_timeout=None,
+    index_interval=None,
 ):
     if not os.path.exists(file_path):
         raise ValueError(f"media file not found: {file_path}")
@@ -312,8 +362,16 @@ def stage_latest_media(
             remote_path,
             run_adb_command=run_adb_command,
             sleep=sleep,
-            timeout=index_timeout,
-            interval=index_interval,
+            timeout=(
+                media_index_timeout_seconds()
+                if index_timeout is None
+                else index_timeout
+            ),
+            interval=(
+                media_index_poll_interval_seconds()
+                if index_interval is None
+                else index_interval
+            ),
         ):
             print(f"[OK] Media indexed in gallery: {remote_path}")
         else:

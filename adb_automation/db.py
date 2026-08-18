@@ -2,6 +2,7 @@ import os
 import re
 
 import mysql.connector
+from mysql.connector import errorcode
 
 from .config import (
     DB_ENV_VAR,
@@ -115,21 +116,33 @@ def _device_index_exists(cursor, index_name):
     return cursor.fetchone() is not None
 
 
+def _execute_ignoring_errno(cursor, query, ignored_errno):
+    try:
+        cursor.execute(query)
+    except mysql.connector.Error as exc:
+        if exc.errno != ignored_errno:
+            raise
+
+
 def migrate_devices_schema(cursor):
     if not _device_column_exists(cursor, "adb_transport"):
-        cursor.execute(
+        _execute_ignoring_errno(
+            cursor,
             """
             ALTER TABLE devices
             ADD COLUMN adb_transport VARCHAR(16) NOT NULL DEFAULT 'wifi' AFTER port
-            """
+            """,
+            errorcode.ER_DUP_FIELDNAME,
         )
 
     if not _device_column_exists(cursor, "usb_serial"):
-        cursor.execute(
+        _execute_ignoring_errno(
+            cursor,
             """
             ALTER TABLE devices
             ADD COLUMN usb_serial VARCHAR(255) NULL AFTER adb_transport
-            """
+            """,
+            errorcode.ER_DUP_FIELDNAME,
         )
 
     if _device_column_is_not_nullable(cursor, "ip"):
@@ -138,11 +151,13 @@ def migrate_devices_schema(cursor):
         cursor.execute("ALTER TABLE devices MODIFY port INTEGER NULL")
 
     if not _device_index_exists(cursor, "uq_devices_usb_serial"):
-        cursor.execute(
+        _execute_ignoring_errno(
+            cursor,
             """
             ALTER TABLE devices
             ADD UNIQUE KEY uq_devices_usb_serial (usb_serial)
-            """
+            """,
+            errorcode.ER_DUP_KEYNAME,
         )
 
 

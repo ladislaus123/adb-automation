@@ -857,9 +857,7 @@ class MediaIndexTests(unittest.TestCase):
                 "--uri",
                 "content://media/external/file",
                 "--projection",
-                "_id:_display_name",
-                "--where",
-                "_display_name='IMG_20260616_193045.jpg'",
+                "_id:_display_name:relative_path",
             ],
         )
 

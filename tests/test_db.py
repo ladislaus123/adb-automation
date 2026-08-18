@@ -1,6 +1,9 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import mysql.connector
+from mysql.connector import errorcode
+
 from adb_automation import db
 
 
@@ -95,6 +98,42 @@ class FakeSchemaCursor:
         return self.result
 
 
+class DuplicateSchemaCursor:
+    def __init__(self):
+        self.result = None
+        self.ignored_duplicates = []
+
+    def execute(self, query, params=None):
+        params = params or ()
+        normalized = " ".join(query.lower().split())
+        if normalized.startswith("show columns from devices like"):
+            column = params[0]
+            if column in {"ip", "port"}:
+                self.result = (column, "varchar(255)", "YES")
+            else:
+                self.result = None
+            return
+        if normalized.startswith("show index from devices where key_name"):
+            self.result = None
+            return
+        if "add column" in normalized:
+            self.ignored_duplicates.append(query)
+            raise mysql.connector.Error(
+                errno=errorcode.ER_DUP_FIELDNAME,
+                msg="Duplicate column name",
+            )
+        if "add unique key" in normalized:
+            self.ignored_duplicates.append(query)
+            raise mysql.connector.Error(
+                errno=errorcode.ER_DUP_KEYNAME,
+                msg="Duplicate key name",
+            )
+        raise AssertionError(f"unexpected query: {query}")
+
+    def fetchone(self):
+        return self.result
+
+
 class DatabaseMigrationTests(unittest.TestCase):
     def test_migrate_devices_schema_adds_usb_columns_and_nullable_wifi_fields(self):
         cursor = FakeSchemaCursor()
@@ -106,6 +145,13 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertEqual(cursor.columns["ip"][2], "YES")
         self.assertEqual(cursor.columns["port"][2], "YES")
         self.assertIn("uq_devices_usb_serial", cursor.indexes)
+
+    def test_migrate_devices_schema_ignores_duplicate_schema_errors(self):
+        cursor = DuplicateSchemaCursor()
+
+        db.migrate_devices_schema(cursor)
+
+        self.assertEqual(len(cursor.ignored_duplicates), 3)
 
 
 if __name__ == "__main__":
