@@ -102,54 +102,34 @@ class SelectLatestMediaFromAttachMenuTests(unittest.TestCase):
             sleep=lambda seconds: None,
         )
 
-        self.assertEqual(
-            commands[0],
-            [
-                "shell",
-                "wm",
-                "size",
-            ],
+    def test_falls_back_to_gallery_source_when_media_strip_missing(self):
+        run_adb = scripted_dump(
+            [ATTACH_DUMP, EMPTY_DUMP, GALLERY_OPTION_DUMP, MEDIA_STRIP_DUMP]
         )
-        self.assertEqual(
-            commands[1],
-            [
-                "shell",
-                "input",
-                "tap",
-                str(media_picker.ATTACH_BUTTON_COORDS[0]),
-                str(media_picker.ATTACH_BUTTON_COORDS[1]),
-            ],
-        )
-        self.assertIn(["shell", "pkill", "-f", "uiautomator"], commands)
-        self.assertIn(["shell", "uiautomator", "dump", "/sdcard/window_dump.xml"], commands)
-        self.assertIn(
-            ["shell", "input", "tap", "88", "849"],
-            commands,
-        )
-
-    def test_clears_stale_uiautomation_before_locating_thumbnail(self):
-        commands = []
-
-        def fake_run_adb(command, serial=None):
-            commands.append(command)
-            if command[:2] == ["shell", "uiautomator"]:
-                return ""
-            if command[:2] == ["shell", "cat"]:
-                return MEDIA_STRIP_DUMP
-            return "Physical size: 720x1600"
 
         media_picker.select_latest_media_from_attach_menu(
             "serial",
             WHATSAPP_PACKAGE,
-            run_adb_command=fake_run_adb,
+            mime_type="image/jpeg",
+            run_adb_command=run_adb,
             sleep=lambda seconds: None,
         )
 
-        pkill_index = commands.index(["shell", "pkill", "-f", "uiautomator"])
-        dump_index = commands.index(
-            ["shell", "uiautomator", "dump", "/sdcard/window_dump.xml"]
-        )
-        self.assertLess(pkill_index, dump_index)
+    def test_raises_when_attach_button_not_found(self):
+        run_adb = scripted_dump([EMPTY_DUMP])
+
+        with patch("adb_automation.media_picker.ATTACH_TIMEOUT_SECONDS", 0.01), patch(
+            "adb_automation.media_picker.capture_debug_ui_dump"
+        ) as capture_debug_ui_dump:
+            with self.assertRaisesRegex(AutomationError, "Attach button not found"):
+                media_picker.select_latest_media_from_attach_menu(
+                    "serial",
+                    WHATSAPP_PACKAGE,
+                    mime_type="image/jpeg",
+                    run_adb_command=run_adb,
+                    sleep=lambda seconds: None,
+                )
+        capture_debug_ui_dump.assert_called_once()
 
     def test_raises_when_no_media_item_found(self):
         commands = []
@@ -308,6 +288,8 @@ class VerifyMediaWasSentTests(unittest.TestCase):
 class SendMediaViaGalleryPickerTests(unittest.TestCase):
     def test_stages_opens_chat_selects_media_sends_and_cleans_up(self):
         with patch(
+            "adb_automation.media_picker.clear_stale_uiautomation"
+        ) as clear_stale_uiautomation, patch(
             "adb_automation.media_picker.stage_latest_media",
             return_value="/sdcard/DCIM/Camera/IMG_1.jpg",
         ) as stage_latest_media, patch(
@@ -332,6 +314,9 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
                 mime_type="image/jpeg",
             )
 
+        clear_stale_uiautomation.assert_called_once_with(
+            "serial", run_adb_command=media_picker.run_adb
+        )
         stage_latest_media.assert_called_once()
         open_whatsapp_chat.assert_called_once()
         verify_whatsapp_chat_ready.assert_called_once()
@@ -342,15 +327,15 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
         )
 
     def test_clears_stale_uiautomation_before_staging_media(self):
-        events = []
+        commands = []
+
+        def run_adb(command, serial=None):
+            commands.append(command)
+            return ""
 
         with patch(
-            "adb_automation.media_picker.clear_stale_uiautomation",
-            side_effect=lambda *a, **k: events.append("clear"),
-        ), patch(
             "adb_automation.media_picker.stage_latest_media",
-            side_effect=lambda *a, **k: events.append("stage")
-            or "/sdcard/DCIM/Camera/IMG_1.jpg",
+            return_value="/sdcard/DCIM/Camera/IMG_1.jpg",
         ), patch(
             "adb_automation.media_picker.open_whatsapp_chat"
         ), patch(
@@ -370,9 +355,10 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
                 "/tmp/photo.jpg",
                 WHATSAPP_PACKAGE,
                 mime_type="image/jpeg",
+                run_adb_command=run_adb,
             )
 
-        self.assertEqual(events, ["clear", "stage"])
+        self.assertEqual(commands[0], ["shell", "pkill", "-f", "uiautomator"])
 
     def test_cleans_up_staged_media_even_when_send_fails(self):
         with patch(

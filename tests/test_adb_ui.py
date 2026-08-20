@@ -25,6 +25,61 @@ class ParseUiDumpTests(unittest.TestCase):
             adb_ui.parse_ui_dump("<not-valid-xml")
 
 
+class DumpUiXmlTests(unittest.TestCase):
+    def test_dump_ui_xml_returns_output_on_success(self):
+        commands = []
+
+        def run_adb(command, serial=None):
+            commands.append(command)
+            if command[:2] == ["shell", "uiautomator"]:
+                return ""
+            return SAMPLE_DUMP
+
+        result = adb_ui.dump_ui_xml("serial", run_adb_command=run_adb)
+
+        self.assertEqual(result, SAMPLE_DUMP)
+        self.assertEqual(
+            commands,
+            [
+                ["shell", "uiautomator", "dump", adb_ui.DUMP_REMOTE_PATH],
+                ["shell", "cat", adb_ui.DUMP_REMOTE_PATH],
+            ],
+        )
+
+    def test_dump_ui_xml_clears_stale_uiautomation_and_retries_once(self):
+        commands = []
+        dump_attempts = []
+
+        def run_adb(command, serial=None):
+            commands.append(command)
+            if command[:2] == ["shell", "uiautomator"]:
+                dump_attempts.append(command)
+                if len(dump_attempts) == 1:
+                    raise AdbError("UiAutomationService ... already registered!")
+                return ""
+            return SAMPLE_DUMP
+
+        result = adb_ui.dump_ui_xml("serial", run_adb_command=run_adb)
+
+        self.assertEqual(result, SAMPLE_DUMP)
+        self.assertEqual(len(dump_attempts), 2)
+        self.assertIn(["shell", "pkill", "-f", "uiautomator"], commands)
+        pkill_index = commands.index(["shell", "pkill", "-f", "uiautomator"])
+        second_dump_index = commands.index(
+            ["shell", "uiautomator", "dump", adb_ui.DUMP_REMOTE_PATH], pkill_index
+        )
+        self.assertGreater(second_dump_index, pkill_index)
+
+    def test_dump_ui_xml_raises_when_retry_also_fails(self):
+        def run_adb(command, serial=None):
+            if command[:2] == ["shell", "uiautomator"]:
+                raise AdbError("still wedged")
+            return ""
+
+        with self.assertRaises(AdbError):
+            adb_ui.dump_ui_xml("serial", run_adb_command=run_adb)
+
+
 class BoundsTests(unittest.TestCase):
     def test_parse_bounds(self):
         self.assertEqual(adb_ui.parse_bounds("[10,20][50,60]"), (10, 20, 50, 60))

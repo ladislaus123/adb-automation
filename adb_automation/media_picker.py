@@ -125,7 +125,24 @@ def select_latest_media_from_attach_menu(
     run_adb_command=run_adb,
     sleep=time.sleep,
 ):
-    tap_fixed_point(serial, ATTACH_BUTTON_COORDS, run_adb_command=run_adb_command)
+    attached = click_first(
+        serial,
+        attach_selectors(whatsapp_package),
+        timeout=ATTACH_TIMEOUT_SECONDS,
+        run_adb_command=run_adb_command,
+        sleep=sleep,
+    )
+    if not attached:
+        raise_if_whatsapp_restricted_dump(
+            serial,
+            run_adb_command=run_adb_command,
+        )
+        capture_debug_ui_dump(
+            serial,
+            ATTACH_NOT_FOUND_DUMP,
+            run_adb_command=run_adb_command,
+        )
+        raise AutomationError("Attach button not found.")
     sleep(WAIT_AFTER_ATTACH_SECONDS)
 
     # The attach sheet's resting height varies between opens (see module
@@ -213,12 +230,11 @@ def send_media_via_gallery_picker(
     run_adb_command=run_adb,
     sleep=time.sleep,
 ):
-    # Always clear any leftover UiAutomation holder before a media job starts,
-    # regardless of whether this particular job would otherwise hit a dump
-    # first in select_latest_media_from_attach_menu() or verify_media_was_sent().
-    # Best-effort and cheap: unconditionally kills any stale app_process/
-    # uiautomator holder so this job never inherits a wedge from whatever ran
-    # on this device before it.
+    # A leftover uiautomator2/Appium instrumentation process from a prior job
+    # on this device (e.g. a text send, or this same flow's own tail end)
+    # keeps the on-device UiAutomation connection registered, so every
+    # `uiautomator dump` below would crash with no output instead of
+    # returning the UI tree. Clear it before this send's first dump call.
     clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
 
     remote_path = stage_latest_media(
