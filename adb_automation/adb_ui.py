@@ -3,14 +3,25 @@ import time
 import xml.etree.ElementTree as ET
 
 from .adb import run_adb
-from .errors import AutomationError
+from .errors import AdbError, AutomationError
 
 DUMP_REMOTE_PATH = "/sdcard/window_dump.xml"
 BOUNDS_PATTERN = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 
 
 def dump_ui_xml(serial, run_adb_command=run_adb):
-    run_adb_command(["shell", "uiautomator", "dump", DUMP_REMOTE_PATH], serial=serial)
+    try:
+        run_adb_command(
+            ["shell", "uiautomator", "dump", DUMP_REMOTE_PATH], serial=serial
+        )
+    except AdbError:
+        # A stale UiAutomation registration (leftover uiautomator2/Appium
+        # instrumentation) makes this crash with "already registered" and no
+        # output. Clear it once and retry before giving up.
+        clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
+        run_adb_command(
+            ["shell", "uiautomator", "dump", DUMP_REMOTE_PATH], serial=serial
+        )
     return run_adb_command(["shell", "cat", DUMP_REMOTE_PATH], serial=serial)
 
 

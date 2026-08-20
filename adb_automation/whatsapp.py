@@ -4,6 +4,7 @@ import time
 import urllib.parse
 
 from .adb import ensure_portrait_orientation, portrait_orientation_guard, run_adb
+from .appium_media import stop_u2_uiautomator
 from .config import STREAM_EXTRA, WHATSAPP_BUSINESS_PACKAGE, WHATSAPP_PACKAGES
 from .errors import (
     AutomationError,
@@ -640,26 +641,45 @@ def send_whatsapp(
                 print("[+] Transmission automated successfully!")
                 return
 
-            launch_whatsapp_direct_media(
-                serial,
-                phone,
-                text,
-                file_path,
-                whatsapp_package,
-                mime_type,
-            )
-            fail_on_contact_picker = True
-        else:
-            from .chat_navigation import open_chat_via_ui
+            # Everything below here uses uiautomator2 (`u2.connect`), which
+            # registers its own on-device UiAutomation connection. Force-stop
+            # it once we're done so it doesn't poison the next send's raw
+            # `uiautomator dump` calls (see media_picker.py).
+            try:
+                launch_whatsapp_direct_media(
+                    serial,
+                    phone,
+                    text,
+                    file_path,
+                    whatsapp_package,
+                    mime_type,
+                )
+                fail_on_contact_picker = True
 
+                print("[*] Waiting for WhatsApp UI to settle...")
+                time.sleep(3.5)
+
+                print("[*] Finding WhatsApp send button with uiautomator2...")
+                click_send_button(
+                    serial,
+                    whatsapp_package,
+                    fail_on_contact_picker=fail_on_contact_picker,
+                )
+                print("[+] Transmission automated successfully!")
+            finally:
+                stop_u2_uiautomator(serial)
+            return
+
+        from .chat_navigation import open_chat_via_ui
+
+        try:
             if not open_chat_via_ui(serial, phone, whatsapp_package, known_contact):
                 launch_whatsapp_text(serial, phone, whatsapp_package)
             fail_on_contact_picker = False
 
-        print("[*] Waiting for WhatsApp UI to settle...")
-        time.sleep(3.5)
+            print("[*] Waiting for WhatsApp UI to settle...")
+            time.sleep(3.5)
 
-        if not file_path:
             ensure_portrait_orientation(serial, run_adb_command=run_adb)
             print("[*] Focusing WhatsApp message field...")
             try:
@@ -689,17 +709,12 @@ def send_whatsapp(
                     print("[*] Waiting for WhatsApp prefilled text UI to settle...")
                     time.sleep(3.5)
 
-        print("[*] Finding WhatsApp send button with uiautomator2...")
-        if file_path:
-            click_send_button(
-                serial,
-                whatsapp_package,
-                fail_on_contact_picker=fail_on_contact_picker,
-            )
-        else:
+            print("[*] Finding WhatsApp send button with uiautomator2...")
             click_send_button_with_keyboard_fallback(
                 serial,
                 whatsapp_package,
                 fail_on_contact_picker=fail_on_contact_picker,
             )
-        print("[+] Transmission automated successfully!")
+            print("[+] Transmission automated successfully!")
+        finally:
+            stop_u2_uiautomator(serial)

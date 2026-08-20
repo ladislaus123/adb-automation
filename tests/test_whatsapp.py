@@ -1007,6 +1007,104 @@ class WhatsappSendButtonTests(unittest.TestCase):
             fail_on_contact_picker=True,
         )
 
+    def test_send_whatsapp_stops_u2_uiautomator_after_text_send(self):
+        with patch(
+            "adb_automation.whatsapp.get_whatsapp_package",
+            return_value=WHATSAPP_MESSENGER_PACKAGE,
+        ), patch(
+            "adb_automation.whatsapp.run_adb", return_value=""
+        ), patch(
+            "adb_automation.whatsapp.focus_message_entry"
+        ), patch(
+            "adb_automation.whatsapp.click_send_button"
+        ), patch(
+            "adb_automation.whatsapp.time.sleep"
+        ), patch(
+            "adb_automation.whatsapp.stop_u2_uiautomator"
+        ) as stop_u2_uiautomator, patch(
+            "builtins.print"
+        ):
+            whatsapp.send_whatsapp(
+                "192.168.10.21:5555", "5511999999999", text="hello there"
+            )
+
+        stop_u2_uiautomator.assert_called_once_with("192.168.10.21:5555")
+
+    def test_send_whatsapp_stops_u2_uiautomator_after_direct_media_intent(self):
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as media_file:
+            with patch(
+                "adb_automation.whatsapp.get_whatsapp_package",
+                return_value=WHATSAPP_MESSENGER_PACKAGE,
+            ), patch(
+                "adb_automation.whatsapp.run_adb", return_value=""
+            ), patch(
+                "adb_automation.whatsapp.click_send_button"
+            ), patch(
+                "adb_automation.whatsapp.time.sleep"
+            ), patch(
+                "adb_automation.whatsapp.stop_u2_uiautomator"
+            ) as stop_u2_uiautomator, patch(
+                "builtins.print"
+            ):
+                whatsapp.send_whatsapp(
+                    "192.168.10.21:5555",
+                    "5511999999999",
+                    text="caption",
+                    file_path=media_file.name,
+                )
+
+        stop_u2_uiautomator.assert_called_once_with("192.168.10.21:5555")
+
+    def test_send_whatsapp_stops_u2_uiautomator_even_when_send_fails(self):
+        with patch(
+            "adb_automation.whatsapp.get_whatsapp_package",
+            return_value=WHATSAPP_MESSENGER_PACKAGE,
+        ), patch(
+            "adb_automation.whatsapp.run_adb", return_value=""
+        ), patch(
+            "adb_automation.whatsapp.focus_message_entry",
+            side_effect=whatsapp.AutomationError("boom"),
+        ), patch(
+            "adb_automation.whatsapp.launch_whatsapp_prefilled_text"
+        ), patch(
+            "adb_automation.whatsapp.click_send_button_with_keyboard_fallback",
+            side_effect=whatsapp.AutomationError("send failed"),
+        ), patch(
+            "adb_automation.whatsapp.time.sleep"
+        ), patch(
+            "adb_automation.whatsapp.stop_u2_uiautomator"
+        ) as stop_u2_uiautomator, patch(
+            "builtins.print"
+        ):
+            with self.assertRaises(whatsapp.AutomationError):
+                whatsapp.send_whatsapp(
+                    "192.168.10.21:5555", "5511999999999", text="hello there"
+                )
+
+        stop_u2_uiautomator.assert_called_once_with("192.168.10.21:5555")
+
+    def test_send_whatsapp_does_not_stop_u2_uiautomator_for_gallery_picker_flow(self):
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as media_file:
+            with patch(
+                "adb_automation.whatsapp.get_whatsapp_package",
+                return_value=WHATSAPP_MESSENGER_PACKAGE,
+            ), patch(
+                "adb_automation.whatsapp.run_adb", return_value=""
+            ), patch(
+                "adb_automation.media_picker.send_media_via_gallery_picker"
+            ), patch(
+                "adb_automation.whatsapp.stop_u2_uiautomator"
+            ) as stop_u2_uiautomator, patch(
+                "builtins.print"
+            ):
+                whatsapp.send_whatsapp(
+                    "192.168.10.21:5555",
+                    "5511999999999",
+                    file_path=media_file.name,
+                )
+
+        stop_u2_uiautomator.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

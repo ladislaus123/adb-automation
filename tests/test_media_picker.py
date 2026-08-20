@@ -59,29 +59,6 @@ class SelectLatestMediaFromAttachMenuTests(unittest.TestCase):
             sleep=lambda seconds: None,
         )
 
-    def test_clears_stale_uiautomation_before_interacting(self):
-        commands = []
-
-        def run_adb(command, serial=None):
-            commands.append(command)
-            if command[:2] == ["shell", "uiautomator"]:
-                return ""
-            if command[:2] == ["shell", "cat"]:
-                return ATTACH_DUMP if len(
-                    [c for c in commands if c[:2] == ["shell", "cat"]]
-                ) == 1 else MEDIA_STRIP_DUMP
-            return ""
-
-        media_picker.select_latest_media_from_attach_menu(
-            "serial",
-            WHATSAPP_PACKAGE,
-            mime_type="image/jpeg",
-            run_adb_command=run_adb,
-            sleep=lambda seconds: None,
-        )
-
-        self.assertEqual(commands[0], ["shell", "pkill", "-f", "uiautomator"])
-
     def test_falls_back_to_gallery_source_when_media_strip_missing(self):
         run_adb = scripted_dump(
             [ATTACH_DUMP, EMPTY_DUMP, GALLERY_OPTION_DUMP, MEDIA_STRIP_DUMP]
@@ -264,6 +241,8 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
         calls = []
 
         with patch(
+            "adb_automation.media_picker.clear_stale_uiautomation"
+        ) as clear_stale_uiautomation, patch(
             "adb_automation.media_picker.stage_latest_media",
             return_value="/sdcard/DCIM/Camera/IMG_1.jpg",
         ) as stage_latest_media, patch(
@@ -288,6 +267,9 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
                 mime_type="image/jpeg",
             )
 
+        clear_stale_uiautomation.assert_called_once_with(
+            "serial", run_adb_command=media_picker.run_adb
+        )
         stage_latest_media.assert_called_once()
         open_whatsapp_chat.assert_called_once()
         verify_whatsapp_chat_ready.assert_called_once()
@@ -296,6 +278,40 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
         cleanup_staged_media.assert_called_once_with(
             "serial", "/sdcard/DCIM/Camera/IMG_1.jpg", run_adb_command=media_picker.run_adb
         )
+
+    def test_clears_stale_uiautomation_before_staging_media(self):
+        commands = []
+
+        def run_adb(command, serial=None):
+            commands.append(command)
+            return ""
+
+        with patch(
+            "adb_automation.media_picker.stage_latest_media",
+            return_value="/sdcard/DCIM/Camera/IMG_1.jpg",
+        ), patch(
+            "adb_automation.media_picker.open_whatsapp_chat"
+        ), patch(
+            "adb_automation.media_picker.verify_whatsapp_chat_ready"
+        ), patch(
+            "adb_automation.media_picker.select_latest_media_from_attach_menu"
+        ), patch(
+            "adb_automation.media_picker.enter_caption_and_send"
+        ), patch(
+            "adb_automation.media_picker.cleanup_staged_media"
+        ), patch(
+            "builtins.print"
+        ):
+            media_picker.send_media_via_gallery_picker(
+                "serial",
+                "5511999999999",
+                "/tmp/photo.jpg",
+                WHATSAPP_PACKAGE,
+                mime_type="image/jpeg",
+                run_adb_command=run_adb,
+            )
+
+        self.assertEqual(commands[0], ["shell", "pkill", "-f", "uiautomator"])
 
     def test_cleans_up_staged_media_even_when_send_fails(self):
         with patch(

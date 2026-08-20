@@ -151,12 +151,6 @@ def select_latest_media_from_attach_menu(
     run_adb_command=run_adb,
     sleep=time.sleep,
 ):
-    # A leftover uiautomator2/Appium instrumentation process from a prior job
-    # on this device (e.g. a text send) keeps the on-device UiAutomation
-    # connection registered, so every `uiautomator dump` below would crash
-    # with no output instead of returning the UI tree.
-    clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
-
     attached = click_first(
         serial,
         attach_selectors(whatsapp_package),
@@ -262,6 +256,13 @@ def send_media_via_gallery_picker(
     run_adb_command=run_adb,
     sleep=time.sleep,
 ):
+    # A leftover uiautomator2/Appium instrumentation process from a prior job
+    # on this device (e.g. a text send, or this same flow's own tail end)
+    # keeps the on-device UiAutomation connection registered, so every
+    # `uiautomator dump` below would crash with no output instead of
+    # returning the UI tree. Clear it before this send's first dump call.
+    clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
+
     remote_path = stage_latest_media(
         serial,
         file_path,
