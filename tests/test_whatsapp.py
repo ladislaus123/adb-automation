@@ -74,6 +74,9 @@ class FakeUiSelector:
             raise self.send_keys_error
         self.sent_keys.append(text)
 
+    def get_text(self):
+        return self.text_values[-1] if self.text_values else ""
+
 
 class FakeUiDevice:
     def __init__(self):
@@ -421,7 +424,8 @@ class WhatsappSendButtonTests(unittest.TestCase):
         ), patch(
             "adb_automation.whatsapp.run_adb", return_value=""
         ) as run_adb, patch(
-            "adb_automation.whatsapp.focus_message_entry"
+            "adb_automation.whatsapp.focus_message_entry",
+            return_value=FakeUiSelector(exists=True),
         ) as focus_message_entry, patch(
             "adb_automation.whatsapp.click_send_button"
         ) as click_send_button, patch(
@@ -1005,6 +1009,66 @@ class WhatsappSendButtonTests(unittest.TestCase):
             "192.168.10.21:5555",
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=True,
+        )
+
+
+class VerifyMessageTypedTests(unittest.TestCase):
+    def test_returns_without_retry_when_text_matches_immediately(self):
+        message_entry = FakeUiSelector(exists=True)
+        message_entry.text_values.append("hello there")
+
+        with patch("adb_automation.whatsapp.time.sleep"):
+            whatsapp.verify_message_typed(message_entry, "hello there")
+
+        self.assertEqual(message_entry.text_values, ["hello there"])
+
+    def test_retries_with_direct_set_when_text_is_missing(self):
+        message_entry = FakeUiSelector(exists=True)
+
+        with patch("adb_automation.whatsapp.time.sleep"):
+            whatsapp.verify_message_typed(message_entry, "hello there")
+
+        self.assertEqual(message_entry.text_values, ["hello there"])
+
+    def test_raises_when_text_still_does_not_match_after_retry(self):
+        class StuckUiSelector:
+            """set_text() reports success but the on-device text never changes."""
+
+            def __init__(self):
+                self.set_text_calls = []
+
+            def get_text(self):
+                return "stuck draft"
+
+            def set_text(self, text):
+                self.set_text_calls.append(text)
+
+        message_entry = StuckUiSelector()
+
+        with patch("adb_automation.whatsapp.time.sleep"), self.assertRaisesRegex(
+            whatsapp.AutomationError,
+            "did not match the intended message",
+        ):
+            whatsapp.verify_message_typed(message_entry, "hello there")
+
+        self.assertEqual(message_entry.set_text_calls, ["hello there"])
+
+    def test_assumes_correct_when_field_cannot_be_read_back(self):
+        class Unreadable:
+            pass
+
+        message_entry = Unreadable()
+
+        with patch("adb_automation.whatsapp.time.sleep"), patch(
+            "builtins.print"
+        ) as fake_print:
+            whatsapp.verify_message_typed(message_entry, "hello there")
+
+        self.assertTrue(
+            any(
+                "Could not read the compose field back" in call.args[0]
+                for call in fake_print.call_args_list
+            )
         )
 
 

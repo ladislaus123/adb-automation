@@ -9,9 +9,41 @@ DUMP_REMOTE_PATH = "/sdcard/window_dump.xml"
 BOUNDS_PATTERN = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 
 
-def dump_ui_xml(serial, run_adb_command=run_adb):
+STALE_CLEAR_SETTLE_SECONDS = 0.3
+
+
+def dump_ui_xml(serial, run_adb_command=run_adb, sleep=time.sleep):
+    try:
+        return _dump_ui_xml_once(serial, run_adb_command)
+    except AutomationError as exc:
+        if not is_stale_uiautomation_error(exc):
+            raise
+        print(
+            f"[WARN] Stale UiAutomation session on {serial}; "
+            "clearing and retrying dump."
+        )
+        clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
+        sleep(STALE_CLEAR_SETTLE_SECONDS)
+        return _dump_ui_xml_once(serial, run_adb_command)
+
+
+def _dump_ui_xml_once(serial, run_adb_command):
     run_adb_command(["shell", "uiautomator", "dump", DUMP_REMOTE_PATH], serial=serial)
     return run_adb_command(["shell", "cat", DUMP_REMOTE_PATH], serial=serial)
+
+
+def is_stale_uiautomation_error(exc):
+    """True for the signature "uiautomator dump" leaves when a leftover
+
+    uiautomator2/Appium instrumentation process already holds the on-device
+    UiAutomation registration: the adb command exits non-zero with no
+    stdout and no stderr at all, so run_adb() falls back to its generic
+    "command failed: ..." message. See clear_stale_uiautomation below.
+    """
+    return str(exc).startswith("command failed:")
+
+
+STALE_APP_PROCESS_NAMES = ("app_process", "app_process32", "app_process64")
 
 
 def clear_stale_uiautomation(serial, run_adb_command=run_adb):
@@ -21,13 +53,27 @@ def clear_stale_uiautomation(serial, run_adb_command=run_adb):
     leftover uiautomator2/Appium instrumentation process from an earlier
     session (which can run as a bare `app_process`, not an installed
     package) makes every dump crash with "UiAutomationService ... already
-    registered!" and exit non-zero with no output at all. Best-effort:
-    there may be nothing to kill.
+    registered!" and exit non-zero with no output at all.
+
+    `pkill -f uiautomator` only catches the leftover when Android kept the
+    `--nice-name=uiautomator` label in its command line. Instrumentation
+    processes that never renamed argv0 still show up as the literal name
+    `app_process`(32/64) instead, so they're killed by exact name too. Real
+    app processes are always renamed off `app_process` by Zygote before they
+    run any code, and Zygote itself shows up as `zygote`/`zygote64`, so this
+    can't accidentally kill an unrelated app or the Zygote/system server.
+
+    Best-effort: there may be nothing to kill.
     """
     try:
         run_adb_command(["shell", "pkill", "-f", "uiautomator"], serial=serial)
     except AutomationError:
         pass
+    for name in STALE_APP_PROCESS_NAMES:
+        try:
+            run_adb_command(["shell", "pkill", "-9", "-x", name], serial=serial)
+        except AutomationError:
+            pass
 
 
 def parse_bounds(bounds):

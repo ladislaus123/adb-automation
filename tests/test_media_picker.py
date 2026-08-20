@@ -5,28 +5,18 @@ from adb_automation import media_picker
 from adb_automation.errors import AutomationError, WhatsAppRestrictedError
 
 WHATSAPP_PACKAGE = "com.whatsapp"
-ATTACH_DUMP = """<hierarchy>
-  <node resource-id="com.whatsapp:id/input_attach_button" content-desc="" bounds="[10,20][50,60]" />
-</hierarchy>
-"""
 MEDIA_STRIP_DUMP = """<hierarchy>
-  <node resource-id="com.whatsapp:id/media_item_view" content-desc="" bounds="[100,200][300,400]" />
-</hierarchy>
-"""
-GALLERY_OPTION_DUMP = """<hierarchy>
-  <node resource-id="com.whatsapp:id/pickfiletype_gallery_holder" content-desc="Gallery" bounds="[0,0][100,100]" />
-</hierarchy>
-"""
-SEND_DUMP = """<hierarchy>
-  <node resource-id="com.whatsapp:id/send" content-desc="Send" bounds="[500,900][560,960]" />
-</hierarchy>
-"""
-CAPTION_DUMP = """<hierarchy>
-  <node resource-id="com.whatsapp:id/caption" content-desc="" bounds="[20,800][580,850]" />
+  <node resource-id="com.whatsapp:id/media_item_view" content-desc="Photo" bounds="[0,761][177,938]" />
 </hierarchy>
 """
 EMPTY_DUMP = "<hierarchy></hierarchy>"
+SEND_BUTTON_PRESENT_DUMP = """<hierarchy>
+  <node resource-id="com.whatsapp:id/send" content-desc="Send" bounds="[615,1405][705,1495]" />
+</hierarchy>
+"""
+SEND_BUTTON_GONE_DUMP = "<hierarchy></hierarchy>"
 RESTRICTED_DUMP = """<hierarchy>
+  <node resource-id="com.whatsapp:id/send" content-desc="Send" bounds="[615,1405][705,1495]" />
   <node text="Sua conta foi restringida" content-desc="" bounds="[0,0][100,100]" />
 </hierarchy>
 """
@@ -40,140 +30,170 @@ def scripted_dump(sequence):
             return ""
         if command[:2] == ["shell", "cat"]:
             if not remaining:
-                return EMPTY_DUMP
+                return SEND_BUTTON_GONE_DUMP
             return remaining.pop(0)
         return ""
 
     return fake_run_adb
 
 
-class SelectLatestMediaFromAttachMenuTests(unittest.TestCase):
-    def test_selects_first_media_item_after_attach(self):
-        run_adb = scripted_dump([ATTACH_DUMP, MEDIA_STRIP_DUMP])
+class ScaledPointTests(unittest.TestCase):
+    def test_scaled_point_is_unchanged_at_reference_resolution(self):
+        def fake_run_adb(command, serial=None):
+            return "Physical size: 720x1600"
 
-        media_picker.select_latest_media_from_attach_menu(
-            "serial",
-            WHATSAPP_PACKAGE,
-            mime_type="image/jpeg",
-            run_adb_command=run_adb,
-            sleep=lambda seconds: None,
+        self.assertEqual(
+            media_picker.scaled_point(
+                "serial", (461, 1456), run_adb_command=fake_run_adb
+            ),
+            (461, 1456),
         )
 
-    def test_clears_stale_uiautomation_before_interacting(self):
+    def test_scaled_point_scales_proportionally_to_actual_screen_size(self):
+        def fake_run_adb(command, serial=None):
+            return "Physical size: 1440x3200"
+
+        self.assertEqual(
+            media_picker.scaled_point(
+                "serial", (360, 800), run_adb_command=fake_run_adb
+            ),
+            (720, 1600),
+        )
+
+    def test_scaled_point_falls_back_to_reference_when_size_unreadable(self):
+        def fake_run_adb(command, serial=None):
+            return ""
+
+        self.assertEqual(
+            media_picker.scaled_point(
+                "serial", (461, 1456), run_adb_command=fake_run_adb
+            ),
+            (461, 1456),
+        )
+
+    def test_scaled_point_falls_back_to_reference_when_wm_size_fails(self):
+        def fake_run_adb(command, serial=None):
+            raise AutomationError("device offline")
+
+        self.assertEqual(
+            media_picker.scaled_point(
+                "serial", (461, 1456), run_adb_command=fake_run_adb
+            ),
+            (461, 1456),
+        )
+
+
+class SelectLatestMediaFromAttachMenuTests(unittest.TestCase):
+    def test_taps_attach_at_fixed_coords_then_finds_thumbnail_by_dump(self):
         commands = []
 
-        def run_adb(command, serial=None):
+        def fake_run_adb(command, serial=None):
             commands.append(command)
             if command[:2] == ["shell", "uiautomator"]:
                 return ""
             if command[:2] == ["shell", "cat"]:
-                return ATTACH_DUMP if len(
-                    [c for c in commands if c[:2] == ["shell", "cat"]]
-                ) == 1 else MEDIA_STRIP_DUMP
-            return ""
+                return MEDIA_STRIP_DUMP
+            return "Physical size: 720x1600"
 
         media_picker.select_latest_media_from_attach_menu(
             "serial",
             WHATSAPP_PACKAGE,
-            mime_type="image/jpeg",
-            run_adb_command=run_adb,
+            run_adb_command=fake_run_adb,
             sleep=lambda seconds: None,
         )
 
-        self.assertEqual(commands[0], ["shell", "pkill", "-f", "uiautomator"])
-
-    def test_falls_back_to_gallery_source_when_media_strip_missing(self):
-        run_adb = scripted_dump(
-            [ATTACH_DUMP, EMPTY_DUMP, GALLERY_OPTION_DUMP, MEDIA_STRIP_DUMP]
+        self.assertEqual(
+            commands[0],
+            [
+                "shell",
+                "wm",
+                "size",
+            ],
         )
+        self.assertEqual(
+            commands[1],
+            [
+                "shell",
+                "input",
+                "tap",
+                str(media_picker.ATTACH_BUTTON_COORDS[0]),
+                str(media_picker.ATTACH_BUTTON_COORDS[1]),
+            ],
+        )
+        self.assertIn(["shell", "pkill", "-f", "uiautomator"], commands)
+        self.assertIn(["shell", "uiautomator", "dump", "/sdcard/window_dump.xml"], commands)
+        self.assertIn(
+            ["shell", "input", "tap", "88", "849"],
+            commands,
+        )
+
+    def test_clears_stale_uiautomation_before_locating_thumbnail(self):
+        commands = []
+
+        def fake_run_adb(command, serial=None):
+            commands.append(command)
+            if command[:2] == ["shell", "uiautomator"]:
+                return ""
+            if command[:2] == ["shell", "cat"]:
+                return MEDIA_STRIP_DUMP
+            return "Physical size: 720x1600"
 
         media_picker.select_latest_media_from_attach_menu(
             "serial",
             WHATSAPP_PACKAGE,
-            mime_type="image/jpeg",
-            run_adb_command=run_adb,
+            run_adb_command=fake_run_adb,
             sleep=lambda seconds: None,
         )
 
-    def test_raises_when_attach_button_not_found(self):
-        run_adb = scripted_dump([EMPTY_DUMP])
+        pkill_index = commands.index(["shell", "pkill", "-f", "uiautomator"])
+        dump_index = commands.index(
+            ["shell", "uiautomator", "dump", "/sdcard/window_dump.xml"]
+        )
+        self.assertLess(pkill_index, dump_index)
 
-        with patch("adb_automation.media_picker.ATTACH_TIMEOUT_SECONDS", 0.01), patch(
-            "adb_automation.media_picker.capture_debug_ui_dump"
-        ) as capture_debug_ui_dump:
-            with self.assertRaisesRegex(AutomationError, "Attach button not found"):
-                media_picker.select_latest_media_from_attach_menu(
-                    "serial",
-                    WHATSAPP_PACKAGE,
-                    mime_type="image/jpeg",
-                    run_adb_command=run_adb,
-                    sleep=lambda seconds: None,
-                )
-        capture_debug_ui_dump.assert_called_once()
+    def test_raises_when_no_media_item_found(self):
+        commands = []
 
-    def test_raises_restricted_when_attach_button_is_hidden_by_restricted_screen(self):
-        run_adb = scripted_dump([RESTRICTED_DUMP, RESTRICTED_DUMP])
+        def fake_run_adb(command, serial=None):
+            commands.append(command)
+            if command[:2] == ["shell", "uiautomator"]:
+                return ""
+            if command[:2] == ["shell", "cat"]:
+                return EMPTY_DUMP
+            return "Physical size: 720x1600"
 
-        with patch("adb_automation.media_picker.ATTACH_TIMEOUT_SECONDS", 0):
-            with self.assertRaisesRegex(
-                WhatsAppRestrictedError,
-                "^WhatsApp is restricted\\.$",
-            ):
-                media_picker.select_latest_media_from_attach_menu(
-                    "serial",
-                    WHATSAPP_PACKAGE,
-                    mime_type="image/jpeg",
-                    run_adb_command=run_adb,
-                    sleep=lambda seconds: None,
-                )
-
-    def test_raises_when_no_media_item_found_anywhere(self):
-        run_adb = scripted_dump([ATTACH_DUMP, EMPTY_DUMP, EMPTY_DUMP])
-
-        with patch(
-            "adb_automation.media_picker.MEDIA_ITEM_TIMEOUT_SECONDS", 0.01
-        ), patch("adb_automation.media_picker.SOURCE_TIMEOUT_SECONDS", 0.01):
+        with patch("adb_automation.media_picker.MEDIA_ITEM_TIMEOUT_SECONDS", 0.01):
             with self.assertRaisesRegex(AutomationError, "No media_item_view found"):
                 media_picker.select_latest_media_from_attach_menu(
                     "serial",
                     WHATSAPP_PACKAGE,
-                    mime_type="audio/mpeg",
-                    run_adb_command=run_adb,
-                    sleep=lambda seconds: None,
-                )
-
-    def test_raises_restricted_when_media_strip_is_hidden_by_restricted_screen(self):
-        run_adb = scripted_dump(
-            [ATTACH_DUMP, RESTRICTED_DUMP, RESTRICTED_DUMP, RESTRICTED_DUMP]
-        )
-
-        with patch(
-            "adb_automation.media_picker.MEDIA_ITEM_TIMEOUT_SECONDS", 0
-        ), patch("adb_automation.media_picker.SOURCE_TIMEOUT_SECONDS", 0):
-            with self.assertRaisesRegex(
-                WhatsAppRestrictedError,
-                "^WhatsApp is restricted\\.$",
-            ):
-                media_picker.select_latest_media_from_attach_menu(
-                    "serial",
-                    WHATSAPP_PACKAGE,
-                    mime_type="audio/mpeg",
-                    run_adb_command=run_adb,
+                    run_adb_command=fake_run_adb,
                     sleep=lambda seconds: None,
                 )
 
 
 class EnterCaptionAndSendTests(unittest.TestCase):
     def test_sends_without_caption_when_none_given(self):
+        run_adb = scripted_dump([SEND_BUTTON_GONE_DUMP])
+
+        media_picker.enter_caption_and_send(
+            "serial",
+            WHATSAPP_PACKAGE,
+            caption=None,
+            run_adb_command=run_adb,
+            sleep=lambda seconds: None,
+        )
+
+    def test_taps_send_button_at_fixed_coords(self):
         commands = []
 
         def fake_run_adb(command, serial=None):
+            commands.append(command)
             if command[:2] == ["shell", "uiautomator"]:
                 return ""
             if command[:2] == ["shell", "cat"]:
-                return SEND_DUMP
-            commands.append(command)
-            return ""
+                return SEND_BUTTON_GONE_DUMP
+            return "Physical size: 720x1600"
 
         media_picker.enter_caption_and_send(
             "serial",
@@ -182,19 +202,28 @@ class EnterCaptionAndSendTests(unittest.TestCase):
             run_adb_command=fake_run_adb,
             sleep=lambda seconds: None,
         )
-        self.assertEqual(commands, [["shell", "input", "tap", "530", "930"]])
 
-    def test_types_caption_before_sending(self):
-        dumps = [CAPTION_DUMP, SEND_DUMP]
+        self.assertIn(
+            [
+                "shell",
+                "input",
+                "tap",
+                str(media_picker.SEND_BUTTON_COORDS[0]),
+                str(media_picker.SEND_BUTTON_COORDS[1]),
+            ],
+            commands,
+        )
+
+    def test_types_caption_before_tapping_send(self):
         commands = []
 
         def fake_run_adb(command, serial=None):
+            commands.append(command)
             if command[:2] == ["shell", "uiautomator"]:
                 return ""
             if command[:2] == ["shell", "cat"]:
-                return dumps.pop(0)
-            commands.append(command)
-            return ""
+                return SEND_BUTTON_GONE_DUMP
+            return "Physical size: 720x1600"
 
         media_picker.enter_caption_and_send(
             "serial",
@@ -203,53 +232,33 @@ class EnterCaptionAndSendTests(unittest.TestCase):
             run_adb_command=fake_run_adb,
             sleep=lambda seconds: None,
         )
-        self.assertIn(["shell", "input", "tap", "300", "825"], commands)
-        self.assertIn(["shell", "input", "text", "hello"], commands)
 
-    def test_warns_and_sends_without_caption_when_field_missing(self):
-        # SEND_DUMP has no caption element, so the same dump content serves both
-        # the (failing) caption search and the (succeeding) send-button search
-        # regardless of how many times the caption search polls before timing out.
-        def run_adb(command, serial=None):
-            if command[:2] == ["shell", "uiautomator"]:
-                return ""
-            return SEND_DUMP
+        caption_tap = [
+            "shell",
+            "input",
+            "tap",
+            str(media_picker.CAPTION_FIELD_COORDS[0]),
+            str(media_picker.CAPTION_FIELD_COORDS[1]),
+        ]
+        text_command = ["shell", "input", "text", "hello"]
+        send_tap = [
+            "shell",
+            "input",
+            "tap",
+            str(media_picker.SEND_BUTTON_COORDS[0]),
+            str(media_picker.SEND_BUTTON_COORDS[1]),
+        ]
+        self.assertIn(caption_tap, commands)
+        self.assertIn(text_command, commands)
+        self.assertIn(send_tap, commands)
+        self.assertLess(commands.index(caption_tap), commands.index(text_command))
+        self.assertLess(commands.index(text_command), commands.index(send_tap))
 
-        with patch(
-            "adb_automation.media_picker.CAPTION_TIMEOUT_SECONDS", 0.01
-        ), patch("builtins.print") as mock_print:
-            media_picker.enter_caption_and_send(
-                "serial",
-                WHATSAPP_PACKAGE,
-                caption="hello",
-                run_adb_command=run_adb,
-                sleep=lambda seconds: None,
-            )
-        self.assertTrue(
-            any("Caption field not found" in call.args[0] for call in mock_print.call_args_list)
-        )
+    def test_raises_when_send_button_still_showing_after_send_tap(self):
+        run_adb = scripted_dump([SEND_BUTTON_PRESENT_DUMP])
 
-    def test_raises_when_send_button_not_found(self):
-        run_adb = scripted_dump([EMPTY_DUMP])
-
-        with patch("adb_automation.media_picker.SEND_TIMEOUT_SECONDS", 0.01), \
-            self.assertRaisesRegex(AutomationError, "Send button not found"):
-            media_picker.enter_caption_and_send(
-                "serial",
-                WHATSAPP_PACKAGE,
-                caption=None,
-                run_adb_command=run_adb,
-                sleep=lambda seconds: None,
-            )
-
-    def test_raises_restricted_when_send_button_is_hidden_by_restricted_screen(self):
-        run_adb = scripted_dump([RESTRICTED_DUMP, RESTRICTED_DUMP])
-
-        with patch("adb_automation.media_picker.SEND_TIMEOUT_SECONDS", 0):
-            with self.assertRaisesRegex(
-                WhatsAppRestrictedError,
-                "^WhatsApp is restricted\\.$",
-            ):
+        with patch("adb_automation.media_picker.write_debug_dump"):
+            with self.assertRaisesRegex(AutomationError, "Media appears unsent"):
                 media_picker.enter_caption_and_send(
                     "serial",
                     WHATSAPP_PACKAGE,
@@ -258,11 +267,46 @@ class EnterCaptionAndSendTests(unittest.TestCase):
                     sleep=lambda seconds: None,
                 )
 
+    def test_raises_restricted_when_final_dump_shows_restricted_text(self):
+        run_adb = scripted_dump([RESTRICTED_DUMP])
+
+        with self.assertRaisesRegex(
+            WhatsAppRestrictedError,
+            "^WhatsApp is restricted\\.$",
+        ):
+            media_picker.enter_caption_and_send(
+                "serial",
+                WHATSAPP_PACKAGE,
+                caption=None,
+                run_adb_command=run_adb,
+                sleep=lambda seconds: None,
+            )
+
+
+class VerifyMediaWasSentTests(unittest.TestCase):
+    def test_returns_when_send_button_is_gone(self):
+        run_adb = scripted_dump([SEND_BUTTON_GONE_DUMP])
+
+        media_picker.verify_media_was_sent(
+            "serial", WHATSAPP_PACKAGE, run_adb_command=run_adb
+        )
+
+    def test_raises_when_dump_itself_fails(self):
+        def fake_run_adb(command, serial=None):
+            if command[:2] == ["shell", "uiautomator"]:
+                raise AutomationError("command failed: some adb error")
+            return ""
+
+        with self.assertRaisesRegex(
+            AutomationError, "Could not verify whether the media was actually sent"
+        ):
+            media_picker.verify_media_was_sent(
+                "serial", WHATSAPP_PACKAGE, run_adb_command=fake_run_adb
+            )
+
 
 class SendMediaViaGalleryPickerTests(unittest.TestCase):
     def test_stages_opens_chat_selects_media_sends_and_cleans_up(self):
-        calls = []
-
         with patch(
             "adb_automation.media_picker.stage_latest_media",
             return_value="/sdcard/DCIM/Camera/IMG_1.jpg",
@@ -297,6 +341,39 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
             "serial", "/sdcard/DCIM/Camera/IMG_1.jpg", run_adb_command=media_picker.run_adb
         )
 
+    def test_clears_stale_uiautomation_before_staging_media(self):
+        events = []
+
+        with patch(
+            "adb_automation.media_picker.clear_stale_uiautomation",
+            side_effect=lambda *a, **k: events.append("clear"),
+        ), patch(
+            "adb_automation.media_picker.stage_latest_media",
+            side_effect=lambda *a, **k: events.append("stage")
+            or "/sdcard/DCIM/Camera/IMG_1.jpg",
+        ), patch(
+            "adb_automation.media_picker.open_whatsapp_chat"
+        ), patch(
+            "adb_automation.media_picker.verify_whatsapp_chat_ready"
+        ), patch(
+            "adb_automation.media_picker.select_latest_media_from_attach_menu"
+        ), patch(
+            "adb_automation.media_picker.enter_caption_and_send"
+        ), patch(
+            "adb_automation.media_picker.cleanup_staged_media"
+        ), patch(
+            "builtins.print"
+        ):
+            media_picker.send_media_via_gallery_picker(
+                "serial",
+                "5511999999999",
+                "/tmp/photo.jpg",
+                WHATSAPP_PACKAGE,
+                mime_type="image/jpeg",
+            )
+
+        self.assertEqual(events, ["clear", "stage"])
+
     def test_cleans_up_staged_media_even_when_send_fails(self):
         with patch(
             "adb_automation.media_picker.stage_latest_media",
@@ -307,7 +384,7 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
             "adb_automation.media_picker.verify_whatsapp_chat_ready"
         ), patch(
             "adb_automation.media_picker.select_latest_media_from_attach_menu",
-            side_effect=AutomationError("Attach button not found."),
+            side_effect=AutomationError("tap failed"),
         ), patch(
             "adb_automation.media_picker.cleanup_staged_media"
         ) as cleanup_staged_media, patch(
@@ -324,7 +401,7 @@ class SendMediaViaGalleryPickerTests(unittest.TestCase):
 
         cleanup_staged_media.assert_called_once()
 
-    def test_reports_when_chat_does_not_open_before_attach_flow(self):
+    def test_reports_when_send_fails_before_attach_flow(self):
         with patch(
             "adb_automation.media_picker.stage_latest_media",
             return_value="/sdcard/DCIM/Camera/IMG_1.jpg",

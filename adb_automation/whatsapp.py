@@ -39,6 +39,7 @@ ADB_INPUT_SHELL_SPECIALS = set("'\"`$&|;<>()*?!#[]{}~\\")
 TEXT_CHUNK_ADB = "adb"
 TEXT_CHUNK_UNICODE = "unicode"
 KEYBOARD_DISMISS_SETTLE_SECONDS = 0.8
+MESSAGE_VERIFY_SETTLE_SECONDS = 0.3
 
 
 def normalize_phone(phone):
@@ -571,6 +572,59 @@ def human_type_unicode_text(serial, text, message_entry):
     set_message_entry_text(message_entry, text)
 
 
+def read_compose_field_text(message_entry):
+    get_text = getattr(message_entry, "get_text", None)
+    if callable(get_text):
+        try:
+            return get_text() or ""
+        except Exception:
+            pass
+
+    info = getattr(message_entry, "info", None)
+    if callable(info):
+        try:
+            info_dict = info()
+            if isinstance(info_dict, dict):
+                return (
+                    info_dict.get("text")
+                    or info_dict.get("contentDescription")
+                    or info_dict.get("content-desc")
+                    or ""
+                )
+        except Exception:
+            pass
+
+    return None
+
+
+def verify_message_typed(message_entry, text):
+    time.sleep(MESSAGE_VERIFY_SETTLE_SECONDS)
+    current = read_compose_field_text(message_entry)
+    if current is None:
+        print(
+            "[WARN] Could not read the compose field back; "
+            "assuming typed text is correct."
+        )
+        return
+    if current == text:
+        return
+
+    print(
+        "[WARN] Compose field text did not match after typing; "
+        "retrying with a direct set before sending."
+    )
+    set_message_entry_text(message_entry, text)
+    time.sleep(MESSAGE_VERIFY_SETTLE_SECONDS)
+    current = read_compose_field_text(message_entry)
+    if current is None or current == text:
+        return
+
+    raise AutomationError(
+        "Compose field text did not match the intended message after typing "
+        "and one retry; refusing to click send on an unverified draft."
+    )
+
+
 def human_type_text(serial, text, message_entry=None):
     if not text:
         return
@@ -675,6 +729,7 @@ def send_whatsapp(
                 print("[*] Typing message with human-like pacing...")
                 try:
                     human_type_text(serial, text, message_entry=message_entry)
+                    verify_message_typed(message_entry, text)
                 except WhatsAppRestrictedError:
                     raise
                 except AutomationError as exc:

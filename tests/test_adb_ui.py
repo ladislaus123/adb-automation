@@ -1,7 +1,7 @@
 import unittest
 
 from adb_automation import adb_ui
-from adb_automation.errors import AutomationError
+from adb_automation.errors import AdbError, AutomationError
 
 SAMPLE_DUMP = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
 <hierarchy rotation="0">
@@ -82,6 +82,48 @@ class TapTests(unittest.TestCase):
     def test_tap_element_raises_without_usable_bounds(self):
         with self.assertRaises(AutomationError):
             adb_ui.tap_element("serial", {"bounds": ""}, run_adb_command=lambda c, serial=None: None)
+
+
+class DumpUiXmlSelfHealTests(unittest.TestCase):
+    def test_dump_ui_xml_retries_after_clearing_stale_uiautomation(self):
+        calls = []
+        dump_command = ["shell", "uiautomator", "dump", adb_ui.DUMP_REMOTE_PATH]
+        cat_command = ["shell", "cat", adb_ui.DUMP_REMOTE_PATH]
+        pkill_command = ["shell", "pkill", "-f", "uiautomator"]
+
+        def fake_run_adb(command, serial=None):
+            calls.append(command)
+            if command == dump_command:
+                if calls.count(command) == 1:
+                    raise AdbError(
+                        "command failed: adb -s serial shell uiautomator dump "
+                        "/sdcard/window_dump.xml"
+                    )
+                return ""
+            if command == cat_command:
+                return SAMPLE_DUMP
+            if command[:2] == ["shell", "pkill"]:
+                return ""
+            raise AssertionError(f"unexpected command: {command}")
+
+        xml_text = adb_ui.dump_ui_xml(
+            "serial", run_adb_command=fake_run_adb, sleep=lambda seconds: None
+        )
+
+        self.assertEqual(xml_text, SAMPLE_DUMP)
+        self.assertIn(pkill_command, calls)
+        for name in adb_ui.STALE_APP_PROCESS_NAMES:
+            self.assertIn(["shell", "pkill", "-9", "-x", name], calls)
+        self.assertEqual(calls.count(dump_command), 2)
+
+    def test_dump_ui_xml_does_not_retry_on_other_errors(self):
+        def fake_run_adb(command, serial=None):
+            if command == ["shell", "uiautomator", "dump", adb_ui.DUMP_REMOTE_PATH]:
+                raise AdbError("device offline")
+            raise AssertionError(f"unexpected command: {command}")
+
+        with self.assertRaises(AdbError):
+            adb_ui.dump_ui_xml("serial", run_adb_command=fake_run_adb)
 
 
 class WaitAndClickTests(unittest.TestCase):

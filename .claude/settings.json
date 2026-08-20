@@ -32,7 +32,14 @@
       "Bash(adb -s R9XL3034S8J shell \"kill -9 20950\")",
       "Bash(adb -s R9XL3034S8J shell cat /sdcard/window_dump.xml)",
       "Bash(adb -s R9XL3034S8J shell \"ps -A 2>/dev/null | grep app_process\")",
-      "Bash(python -m pytest tests/test_media_picker.py -q)"
+      "Bash(python -m pytest tests/test_media_picker.py -q)",
+      "Bash(python -m adb_automation send --device 55 --phone 5547997571861 --file test.mp4 --business)",
+      "Bash(tasklist //FI \"IMAGENAME eq python.exe\" //FO CSV)",
+      "Bash(adb -s R9XL30341BR shell \"kill -9 13345\")",
+      "Bash(curl -s -X POST http://127.0.0.1:5000/api/sendVideo -H 'X-API-Key: 12345678' -H 'Content-Type: application/json' -d '{\"device\":\"55\",\"phone\":\"5547997571861\",\"file_path\":\"__CMDSUB_OUTPUT__/test.mp4\",\"business\":true}')",
+      "Bash(curl -s -X POST http://127.0.0.1:5000/api/sendVideo -H 'X-API-Key: 12345678' -H 'Content-Type: application/json' -d '{\"device\":\"55\",\"phone\":\"5547997571861\",\"file_path\":\"C:\\\\\\\\Users\\\\\\\\Pichau\\\\\\\\Desktop\\\\\\\\Inteldesk\\\\\\\\adb-automation\\\\\\\\test.mp4\",\"business\":true}')",
+      "Bash(curl -s -X POST http://127.0.0.1:5000/api/sendVideo -H 'X-API-Key: 12345678' -H 'Content-Type: application/json' --data-binary '@C:\\\\Users\\\\Pichau\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-Pichau-Desktop-Inteldesk-adb-automation\\\\52cb9888-31d3-4065-a753-bdc5d01cad59\\\\scratchpad\\\\sendvideo_payload.json')",
+      "Bash(adb -s R9XL30341BR shell dumpsys window)"
     ]
   }
 }
