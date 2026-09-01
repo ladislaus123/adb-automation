@@ -10,6 +10,10 @@ MEDIA_STRIP_DUMP = """<hierarchy>
 </hierarchy>
 """
 EMPTY_DUMP = "<hierarchy></hierarchy>"
+GALLERY_OPTION_DUMP = """<hierarchy>
+  <node resource-id="com.whatsapp:id/pickfiletype_gallery_holder" content-desc="Galeria" bounds="[0,901][180,1005]" />
+</hierarchy>
+"""
 SEND_BUTTON_PRESENT_DUMP = """<hierarchy>
   <node resource-id="com.whatsapp:id/send" content-desc="Send" bounds="[615,1405][705,1495]" />
 </hierarchy>
@@ -118,6 +122,58 @@ class SelectLatestMediaFromAttachMenuTests(unittest.TestCase):
                 media_picker.select_latest_media_from_attach_menu(
                     "serial",
                     WHATSAPP_PACKAGE,
+                    run_adb_command=fake_run_adb,
+                    sleep=lambda seconds: None,
+                )
+
+    def test_falls_back_to_gallery_source_when_media_strip_missing(self):
+        dumps = [EMPTY_DUMP, GALLERY_OPTION_DUMP, MEDIA_STRIP_DUMP]
+        commands = []
+
+        def fake_run_adb(command, serial=None):
+            commands.append(command)
+            if command[:2] == ["shell", "uiautomator"]:
+                return ""
+            if command[:2] == ["shell", "cat"]:
+                return dumps.pop(0) if dumps else MEDIA_STRIP_DUMP
+            return "Physical size: 720x1600"
+
+        # Zero timeouts force exactly one dump attempt per wait_for_first
+        # call, so the scripted `dumps` sequence lines up deterministically
+        # with (1) the initial media-item search, (2) the Galeria tap
+        # search, (3) the retried media-item search.
+        with patch("adb_automation.media_picker.MEDIA_ITEM_TIMEOUT_SECONDS", 0), patch(
+            "adb_automation.media_picker.SOURCE_TIMEOUT_SECONDS", 0
+        ):
+            media_picker.select_latest_media_from_attach_menu(
+                "serial",
+                WHATSAPP_PACKAGE,
+                mime_type="image/jpeg",
+                run_adb_command=fake_run_adb,
+                sleep=lambda seconds: None,
+            )
+
+        self.assertIn(
+            ["shell", "input", "tap", "90", "953"],
+            commands,
+        )
+
+    def test_raises_when_no_media_item_found_even_after_gallery_fallback(self):
+        def fake_run_adb(command, serial=None):
+            if command[:2] == ["shell", "uiautomator"]:
+                return ""
+            if command[:2] == ["shell", "cat"]:
+                return EMPTY_DUMP
+            return "Physical size: 720x1600"
+
+        with patch("adb_automation.media_picker.MEDIA_ITEM_TIMEOUT_SECONDS", 0.01), patch(
+            "adb_automation.media_picker.SOURCE_TIMEOUT_SECONDS", 0.01
+        ):
+            with self.assertRaisesRegex(AutomationError, "No media_item_view found"):
+                media_picker.select_latest_media_from_attach_menu(
+                    "serial",
+                    WHATSAPP_PACKAGE,
+                    mime_type="image/jpeg",
                     run_adb_command=fake_run_adb,
                     sleep=lambda seconds: None,
                 )

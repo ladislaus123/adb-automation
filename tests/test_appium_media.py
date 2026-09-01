@@ -763,6 +763,8 @@ class AppiumMediaStagingTests(unittest.TestCase):
             commands.append((command, serial))
             if command[:3] == ["shell", "toybox", "touch"]:
                 raise AutomationError("touch failed")
+            if command[:3] == ["shell", "content", "query"]:
+                return "_display_name=IMG_20260616_193045.jpg"
             return ""
 
         with tempfile.NamedTemporaryFile(suffix=".jpg") as media_file, patch(
@@ -824,6 +826,8 @@ class AppiumMediaStagingTests(unittest.TestCase):
 
         def fake_run_adb(command, serial=None):
             commands.append((command, serial))
+            if command[:3] == ["shell", "content", "query"]:
+                return "_display_name=VID_20260616_193045.mp4"
             return ""
 
         with tempfile.NamedTemporaryFile(suffix=".mp4") as media_file, patch(
@@ -860,6 +864,33 @@ class AppiumMediaStagingTests(unittest.TestCase):
         )
         fresh_image_factory.assert_not_called()
         remove_local_file.assert_not_called()
+
+    def test_raises_when_media_index_is_never_confirmed(self):
+        fixed_now = datetime(2026, 6, 16, 19, 30, 45)
+
+        def fake_run_adb(command, serial=None):
+            if command[:3] == ["shell", "content", "query"]:
+                return ""
+            return ""
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4") as media_file, patch(
+            "builtins.print"
+        ):
+            with self.assertRaisesRegex(
+                AutomationError, "refusing to pick media blind"
+            ):
+                appium_media.stage_latest_media(
+                    "192.168.10.21:5555",
+                    media_file.name,
+                    "video/mp4",
+                    run_adb_command=fake_run_adb,
+                    now_provider=lambda: fixed_now,
+                    fresh_image_factory=Mock(),
+                    remove_local_file=Mock(),
+                    wait_after_push=0,
+                    sleep=lambda *_: None,
+                    index_timeout=0,
+                )
 
 
 class MediaIndexTests(unittest.TestCase):

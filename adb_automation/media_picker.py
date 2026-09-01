@@ -13,6 +13,7 @@ from .adb_ui import (
 from .appium_media import (
     cleanup_staged_media,
     media_item_selectors,
+    media_source_selectors,
     open_whatsapp_chat,
     send_selectors,
     stage_latest_media,
@@ -45,6 +46,7 @@ WAIT_AFTER_SEND_SECONDS = 2
 CAPTION_FOCUS_SETTLE_SECONDS = 0.4
 CHAT_READY_SETTLE_SECONDS = 1.0
 MEDIA_ITEM_TIMEOUT_SECONDS = 6
+SOURCE_TIMEOUT_SECONDS = 2
 MEDIA_SEND_UNVERIFIED_DUMP = "debug_media_send_unverified.xml"
 
 SCREEN_SIZE_PATTERN = re.compile(r"(\d+)x(\d+)")
@@ -122,6 +124,7 @@ def _type_caption(serial, caption, run_adb_command=run_adb):
 def select_latest_media_from_attach_menu(
     serial,
     whatsapp_package,
+    mime_type=None,
     run_adb_command=run_adb,
     sleep=time.sleep,
 ):
@@ -141,6 +144,27 @@ def select_latest_media_from_attach_menu(
         run_adb_command=run_adb_command,
         sleep=sleep,
     )
+    if not selected:
+        # On some devices/WhatsApp versions the attach sheet's "recent media"
+        # strip isn't shown by default and the "Galeria" tile has to be
+        # tapped first to reveal it.
+        source_selectors = media_source_selectors(whatsapp_package, mime_type)
+        if source_selectors and click_first(
+            serial,
+            source_selectors,
+            timeout=SOURCE_TIMEOUT_SECONDS,
+            run_adb_command=run_adb_command,
+            sleep=sleep,
+        ):
+            sleep(WAIT_AFTER_ATTACH_SECONDS)
+            selected = click_first(
+                serial,
+                media_item_selectors(whatsapp_package),
+                timeout=MEDIA_ITEM_TIMEOUT_SECONDS,
+                run_adb_command=run_adb_command,
+                sleep=sleep,
+            )
+
     if not selected:
         raise AutomationError(
             "No media_item_view found. The media strip is not visible or "
@@ -244,6 +268,7 @@ def send_media_via_gallery_picker(
         select_latest_media_from_attach_menu(
             serial,
             whatsapp_package,
+            mime_type=mime_type,
             run_adb_command=run_adb_command,
             sleep=sleep,
         )
