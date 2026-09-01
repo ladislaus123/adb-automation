@@ -173,6 +173,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
         target = device.add_selector(
             {"resourceId": f"{WHATSAPP_MESSENGER_PACKAGE}:id/send"}
         )
+        device.add_selector({"resourceId": f"{WHATSAPP_MESSENGER_PACKAGE}:id/entry"})
 
         whatsapp.click_send_button(
             "192.168.10.21:5555",
@@ -191,6 +192,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
     def test_click_send_button_falls_back_to_localized_description(self):
         device = FakeUiDevice()
         target = device.add_selector({"description": "Enviar"})
+        device.add_selector({"resourceId": f"{WHATSAPP_MESSENGER_PACKAGE}:id/entry"})
 
         whatsapp.click_send_button(
             "192.168.10.21:5555",

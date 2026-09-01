@@ -130,7 +130,7 @@
 
     try {
       const payload = await apiRequest("/api/devices");
-      const devices = payload.devices || [];
+      const devices = sortDevicesByName(payload.devices || []);
       if (editingDeviceId === null) {
         renderDevices(devices);
       } else {
@@ -149,6 +149,21 @@
       refreshInFlight = false;
       elements.refreshButton.disabled = false;
     }
+  }
+
+  function deviceNameSortValue(device) {
+    const match = String(device.name || "").match(/\d+/);
+    return match ? parseInt(match[0], 10) : Number.POSITIVE_INFINITY;
+  }
+
+  function sortDevicesByName(devices) {
+    return [...devices].sort((a, b) => {
+      const diff = deviceNameSortValue(a) - deviceNameSortValue(b);
+      if (diff !== 0) {
+        return diff;
+      }
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
   }
 
   function renderDevices(devices) {

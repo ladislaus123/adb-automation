@@ -723,7 +723,36 @@ class AppiumMediaStagingTests(unittest.TestCase):
                 run_adb_command=fake_run_adb,
             )
 
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(commands[0][0][:3], ["shell", "rm", "-f"])
+        self.assertIn(["shell", "content", "delete"], [cmd[:3] for cmd, _ in commands])
+        self.assertIn(
+            ["shell", "am", "broadcast"], [cmd[:3] for cmd, _ in commands]
+        )
+        self.assertIn(
+            ["shell", "content", "query"], [cmd[:3] for cmd, _ in commands]
+        )
+
+    def test_cleanup_staged_media_warns_when_still_indexed(self):
+        with patch("builtins.print") as mock_print:
+            appium_media.cleanup_staged_media(
+                "192.168.10.21:5555",
+                "/sdcard/DCIM/Camera/IMG_20260616_193045.jpg",
+                run_adb_command=lambda command, serial=None: (
+                    "_id=1:_display_name=IMG_20260616_193045.jpg"
+                    if command[:3] == ["shell", "content", "query"]
+                    else ""
+                ),
+                sleep=lambda seconds: None,
+                timeout=0.01,
+                interval=0.01,
+            )
+
+        self.assertTrue(
+            any(
+                "still visible in the gallery index" in call.args[0]
+                for call in mock_print.call_args_list
+            )
+        )
 
     def test_stage_latest_image_uses_fresh_file_and_cleans_it_up(self):
         fixed_now = datetime(2026, 6, 16, 19, 30, 45)

@@ -41,6 +41,8 @@ TEXT_CHUNK_ADB = "adb"
 TEXT_CHUNK_UNICODE = "unicode"
 KEYBOARD_DISMISS_SETTLE_SECONDS = 0.8
 MESSAGE_VERIFY_SETTLE_SECONDS = 0.3
+SEND_CONFIRM_TIMEOUT_SECONDS = 5
+SEND_CONFIRM_POLL_SECONDS = 0.2
 
 
 def normalize_phone(phone):
@@ -238,6 +240,29 @@ def focus_message_entry(
     )
 
 
+def message_entry_is_empty(device, whatsapp_package):
+    for selector_kwargs in message_entry_selectors(whatsapp_package):
+        try:
+            selector = device(**selector_kwargs)
+            if selector_exists(selector):
+                return not selector.get_text()
+        except Exception:
+            continue
+    return False
+
+
+def wait_for_message_entry_cleared(
+    device, whatsapp_package, timeout=SEND_CONFIRM_TIMEOUT_SECONDS
+):
+    deadline = time.monotonic() + timeout
+    while True:
+        if message_entry_is_empty(device, whatsapp_package):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(SEND_CONFIRM_POLL_SECONDS)
+
+
 def click_send_button(
     serial,
     whatsapp_package,
@@ -273,7 +298,21 @@ def click_send_button(
                 selector = device(**selector_kwargs)
                 if selector_exists(selector):
                     selector.click()
-                    return
+                    if wait_for_message_entry_cleared(device, whatsapp_package):
+                        return
+                    # Tap may not have registered (WhatsApp still showing the
+                    # typed draft); retry once before giving up so callers never
+                    # move on while a draft is still sitting unsent in the box.
+                    selector.click()
+                    if wait_for_message_entry_cleared(device, whatsapp_package):
+                        return
+                    raise AutomationError(
+                        "WhatsApp send button was tapped but the message entry "
+                        "field was not cleared; the message may still be a "
+                        "draft."
+                    )
+            except AutomationError:
+                raise
             except Exception as exc:
                 last_error = exc
 
