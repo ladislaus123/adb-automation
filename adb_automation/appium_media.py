@@ -183,7 +183,31 @@ def media_index_poll_interval_seconds():
     )
 
 
-def cleanup_staged_media(serial, remote_path, run_adb_command=run_adb):
+def delete_media_store_row(serial, remote_path, run_adb_command=run_adb):
+    filename = Path(remote_path).name
+    run_best_effort_adb(
+        [
+            "shell",
+            "content",
+            "delete",
+            "--uri",
+            "content://media/external/file",
+            "--where",
+            f"_display_name='{filename}'",
+        ],
+        serial,
+        run_adb_command=run_adb_command,
+    )
+
+
+def cleanup_staged_media(
+    serial,
+    remote_path,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    timeout=MEDIA_INDEX_TIMEOUT_SECONDS,
+    interval=MEDIA_INDEX_POLL_INTERVAL_SECONDS,
+):
     if not remote_path:
         return
 
@@ -193,19 +217,28 @@ def cleanup_staged_media(serial, remote_path, run_adb_command=run_adb):
         serial,
         run_adb_command=run_adb_command,
     )
-    run_best_effort_adb(
-        [
-            "shell",
-            "am",
-            "broadcast",
-            "-a",
-            "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-            "-d",
-            f"file://{remote_path}",
-        ],
+    # The legacy MEDIA_SCANNER_SCAN_FILE broadcast has had no receiver since
+    # API 29, so it can't be relied on to purge the MediaStore row for a
+    # deleted file. Delete the row directly, then confirm (mirroring
+    # wait_for_media_indexed) that it's actually gone before returning --
+    # otherwise WhatsApp's attach-media strip can still show/select this
+    # stale entry for the *next* queued send on this device.
+    delete_media_store_row(serial, remote_path, run_adb_command=run_adb_command)
+    broadcast_media_scan(serial, remote_path, run_adb_command=run_adb_command)
+
+    if not wait_for_media_deindexed(
         serial,
+        remote_path,
         run_adb_command=run_adb_command,
-    )
+        sleep=sleep,
+        timeout=timeout,
+        interval=interval,
+    ):
+        print(
+            "[WARN] Staged media still visible in the gallery index after "
+            f"cleanup: {remote_path}. The next media send on this device "
+            "may pick a stale attach-menu item."
+        )
 
 
 def broadcast_media_scan(serial, remote_path, run_adb_command=run_adb):
@@ -310,6 +343,25 @@ def wait_for_media_indexed(
     )
     log_media_index_debug(serial, remote_path, run_adb_command=run_adb_command)
     return False
+
+
+def wait_for_media_deindexed(
+    serial,
+    remote_path,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    timeout=MEDIA_INDEX_TIMEOUT_SECONDS,
+    interval=MEDIA_INDEX_POLL_INTERVAL_SECONDS,
+):
+    attempts = max(1, int(timeout / interval))
+    for attempt in range(attempts):
+        if not media_is_indexed(serial, remote_path, run_adb_command=run_adb_command):
+            return True
+        if attempt:
+            delete_media_store_row(serial, remote_path, run_adb_command=run_adb_command)
+        sleep(interval)
+
+    return not media_is_indexed(serial, remote_path, run_adb_command=run_adb_command)
 
 
 def build_remote_media_path(local_path, mime_type, now):
