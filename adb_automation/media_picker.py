@@ -125,24 +125,7 @@ def select_latest_media_from_attach_menu(
     run_adb_command=run_adb,
     sleep=time.sleep,
 ):
-    attached = click_first(
-        serial,
-        attach_selectors(whatsapp_package),
-        timeout=ATTACH_TIMEOUT_SECONDS,
-        run_adb_command=run_adb_command,
-        sleep=sleep,
-    )
-    if not attached:
-        raise_if_whatsapp_restricted_dump(
-            serial,
-            run_adb_command=run_adb_command,
-        )
-        capture_debug_ui_dump(
-            serial,
-            ATTACH_NOT_FOUND_DUMP,
-            run_adb_command=run_adb_command,
-        )
-        raise AutomationError("Attach button not found.")
+    tap_fixed_point(serial, ATTACH_BUTTON_COORDS, run_adb_command=run_adb_command)
     sleep(WAIT_AFTER_ATTACH_SECONDS)
 
     # The attach sheet's resting height varies between opens (see module

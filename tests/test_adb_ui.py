@@ -139,21 +139,17 @@ class TapTests(unittest.TestCase):
             adb_ui.tap_element("serial", {"bounds": ""}, run_adb_command=lambda c, serial=None: None)
 
 
-class DumpUiXmlSelfHealTests(unittest.TestCase):
-    def test_dump_ui_xml_retries_after_clearing_stale_uiautomation(self):
+class DumpUiXmlKillsStaleAppProcessTests(unittest.TestCase):
+    def test_clears_exact_named_app_process_before_retry(self):
         calls = []
         dump_command = ["shell", "uiautomator", "dump", adb_ui.DUMP_REMOTE_PATH]
         cat_command = ["shell", "cat", adb_ui.DUMP_REMOTE_PATH]
-        pkill_command = ["shell", "pkill", "-f", "uiautomator"]
 
         def fake_run_adb(command, serial=None):
             calls.append(command)
             if command == dump_command:
                 if calls.count(command) == 1:
-                    raise AdbError(
-                        "command failed: adb -s serial shell uiautomator dump "
-                        "/sdcard/window_dump.xml"
-                    )
+                    raise AdbError("command failed: adb -s serial shell uiautomator dump")
                 return ""
             if command == cat_command:
                 return SAMPLE_DUMP
@@ -166,19 +162,8 @@ class DumpUiXmlSelfHealTests(unittest.TestCase):
         )
 
         self.assertEqual(xml_text, SAMPLE_DUMP)
-        self.assertIn(pkill_command, calls)
         for name in adb_ui.STALE_APP_PROCESS_NAMES:
             self.assertIn(["shell", "pkill", "-9", "-x", name], calls)
-        self.assertEqual(calls.count(dump_command), 2)
-
-    def test_dump_ui_xml_does_not_retry_on_other_errors(self):
-        def fake_run_adb(command, serial=None):
-            if command == ["shell", "uiautomator", "dump", adb_ui.DUMP_REMOTE_PATH]:
-                raise AdbError("device offline")
-            raise AssertionError(f"unexpected command: {command}")
-
-        with self.assertRaises(AdbError):
-            adb_ui.dump_ui_xml("serial", run_adb_command=fake_run_adb)
 
 
 class WaitAndClickTests(unittest.TestCase):

@@ -9,7 +9,10 @@ DUMP_REMOTE_PATH = "/sdcard/window_dump.xml"
 BOUNDS_PATTERN = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 
 
-def dump_ui_xml(serial, run_adb_command=run_adb):
+STALE_CLEAR_SETTLE_SECONDS = 0.3
+
+
+def dump_ui_xml(serial, run_adb_command=run_adb, sleep=time.sleep):
     try:
         run_adb_command(
             ["shell", "uiautomator", "dump", DUMP_REMOTE_PATH], serial=serial
@@ -17,8 +20,11 @@ def dump_ui_xml(serial, run_adb_command=run_adb):
     except AdbError:
         # A stale UiAutomation registration (leftover uiautomator2/Appium
         # instrumentation) makes this crash with "already registered" and no
-        # output. Clear it once and retry before giving up.
+        # output. Clear it once and retry before giving up. The settle sleep
+        # gives the OS a moment to actually release the registration after
+        # the kill before we retry.
         clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
+        sleep(STALE_CLEAR_SETTLE_SECONDS)
         run_adb_command(
             ["shell", "uiautomator", "dump", DUMP_REMOTE_PATH], serial=serial
         )

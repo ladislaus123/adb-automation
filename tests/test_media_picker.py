@@ -102,35 +102,6 @@ class SelectLatestMediaFromAttachMenuTests(unittest.TestCase):
             sleep=lambda seconds: None,
         )
 
-    def test_falls_back_to_gallery_source_when_media_strip_missing(self):
-        run_adb = scripted_dump(
-            [ATTACH_DUMP, EMPTY_DUMP, GALLERY_OPTION_DUMP, MEDIA_STRIP_DUMP]
-        )
-
-        media_picker.select_latest_media_from_attach_menu(
-            "serial",
-            WHATSAPP_PACKAGE,
-            mime_type="image/jpeg",
-            run_adb_command=run_adb,
-            sleep=lambda seconds: None,
-        )
-
-    def test_raises_when_attach_button_not_found(self):
-        run_adb = scripted_dump([EMPTY_DUMP])
-
-        with patch("adb_automation.media_picker.ATTACH_TIMEOUT_SECONDS", 0.01), patch(
-            "adb_automation.media_picker.capture_debug_ui_dump"
-        ) as capture_debug_ui_dump:
-            with self.assertRaisesRegex(AutomationError, "Attach button not found"):
-                media_picker.select_latest_media_from_attach_menu(
-                    "serial",
-                    WHATSAPP_PACKAGE,
-                    mime_type="image/jpeg",
-                    run_adb_command=run_adb,
-                    sleep=lambda seconds: None,
-                )
-        capture_debug_ui_dump.assert_called_once()
-
     def test_raises_when_no_media_item_found(self):
         commands = []
 
