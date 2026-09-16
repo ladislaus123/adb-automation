@@ -139,6 +139,33 @@ class TapTests(unittest.TestCase):
             adb_ui.tap_element("serial", {"bounds": ""}, run_adb_command=lambda c, serial=None: None)
 
 
+class DumpUiXmlKillsStaleAppProcessTests(unittest.TestCase):
+    def test_clears_exact_named_app_process_before_retry(self):
+        calls = []
+        dump_command = ["shell", "uiautomator", "dump", adb_ui.DUMP_REMOTE_PATH]
+        cat_command = ["shell", "cat", adb_ui.DUMP_REMOTE_PATH]
+
+        def fake_run_adb(command, serial=None):
+            calls.append(command)
+            if command == dump_command:
+                if calls.count(command) == 1:
+                    raise AdbError("command failed: adb -s serial shell uiautomator dump")
+                return ""
+            if command == cat_command:
+                return SAMPLE_DUMP
+            if command[:2] == ["shell", "pkill"]:
+                return ""
+            raise AssertionError(f"unexpected command: {command}")
+
+        xml_text = adb_ui.dump_ui_xml(
+            "serial", run_adb_command=fake_run_adb, sleep=lambda seconds: None
+        )
+
+        self.assertEqual(xml_text, SAMPLE_DUMP)
+        for name in adb_ui.STALE_APP_PROCESS_NAMES:
+            self.assertIn(["shell", "pkill", "-9", "-x", name], calls)
+
+
 class WaitAndClickTests(unittest.TestCase):
     def test_wait_for_first_retries_until_element_appears(self):
         dumps = ["<hierarchy></hierarchy>", SAMPLE_DUMP]

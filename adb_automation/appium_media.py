@@ -427,7 +427,14 @@ def stage_latest_media(
         ):
             print(f"[OK] Media indexed in gallery: {remote_path}")
         else:
-            print("[WARN] Proceeding without confirmed gallery index.")
+            # Never proceed on an unconfirmed index: the gallery picker
+            # selects whatever it finds first, with no way to tell it apart
+            # from an older, unrelated file already on the device — silently
+            # continuing here is how the wrong media ends up getting sent.
+            raise AutomationError(
+                f"Could not confirm {remote_path} was indexed in the device "
+                "gallery; refusing to pick media blind."
+            )
         return remote_path
     finally:
         if temporary_media:
