@@ -101,8 +101,9 @@ so it applies consistently to the stored row, `GET /api/notifications`, and the 
 
 ## 2. Webhook delivery (server → your service)
 
-If `ADB_AUTOMATION_WEBHOOK_URL` is set (see `.env`), every successfully-ingested notification is
-immediately forwarded there:
+If `ADB_AUTOMATION_WEBHOOK_URL` is set (see `.env`), every newly-ingested notification is
+immediately forwarded there. Duplicate Android notification reposts still return `202` with the
+original `notification` and `"duplicate": true`, but they are not forwarded again.
 
 ```
 POST <ADB_AUTOMATION_WEBHOOK_URL>

@@ -116,6 +116,18 @@ def _device_index_exists(cursor, index_name):
     return cursor.fetchone() is not None
 
 
+def _received_notification_column_exists(cursor, column):
+    cursor.execute("SHOW COLUMNS FROM received_notifications LIKE %s", (column,))
+    return cursor.fetchone() is not None
+
+
+def _received_notification_index_exists(cursor, index_name):
+    cursor.execute(
+        "SHOW INDEX FROM received_notifications WHERE Key_name = %s", (index_name,)
+    )
+    return cursor.fetchone() is not None
+
+
 def _execute_ignoring_errno(cursor, query, ignored_errno):
     try:
         cursor.execute(query)
@@ -156,6 +168,28 @@ def migrate_devices_schema(cursor):
             """
             ALTER TABLE devices
             ADD UNIQUE KEY uq_devices_usb_serial (usb_serial)
+            """,
+            errorcode.ER_DUP_KEYNAME,
+        )
+
+
+def migrate_received_notifications_schema(cursor):
+    if not _received_notification_column_exists(cursor, "dedup_key"):
+        _execute_ignoring_errno(
+            cursor,
+            """
+            ALTER TABLE received_notifications
+            ADD COLUMN dedup_key CHAR(40) NULL AFTER payload_json
+            """,
+            errorcode.ER_DUP_FIELDNAME,
+        )
+
+    if not _received_notification_index_exists(cursor, "uq_received_notifications_dedup"):
+        _execute_ignoring_errno(
+            cursor,
+            """
+            ALTER TABLE received_notifications
+            ADD UNIQUE KEY uq_received_notifications_dedup (dedup_key)
             """,
             errorcode.ER_DUP_KEYNAME,
         )
@@ -225,12 +259,15 @@ def init_database(conn):
                 mime_type VARCHAR(128),
                 media_path TEXT,
                 payload_json TEXT,
+                dedup_key CHAR(40),
                 created_at VARCHAR(32) NOT NULL,
                 PRIMARY KEY (id),
+                UNIQUE KEY uq_received_notifications_dedup (dedup_key),
                 KEY idx_received_notifications_created_at (created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """
         )
+        migrate_received_notifications_schema(cursor)
         conn.commit()
     finally:
         cursor.close()
