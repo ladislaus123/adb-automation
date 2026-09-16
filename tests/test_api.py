@@ -899,6 +899,51 @@ class ApiRouteTests(unittest.TestCase):
         self.assertEqual(dispatch_webhook.call_args[0][0]["sender"], "Jane Doe")
         self.assertTrue(conn.closed)
 
+    def test_notification_ingest_deduplicates_reposted_notification(self):
+        conn = FakeMariaDBConnection()
+        payload = {
+            "device_label": "phone-01",
+            "package": "com.whatsapp",
+            "conversation_title": "Jane Doe +55 47 99999-1111",
+            "post_time_ms": 1_777_000_000_000,
+            "messages": [
+                {
+                    "sender": "Jane Doe +55 47 99999-1111",
+                    "text": "Same reply",
+                    "timestamp_ms": 1_777_000_000_000,
+                    "has_media": False,
+                }
+            ],
+        }
+        reposted_payload = dict(payload, post_time_ms=1_777_000_030_000)
+
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"), patch(
+            "adb_automation.api.dispatch_webhook", return_value=True
+        ) as dispatch_webhook:
+            first_response = self.client.post(
+                "/api/notifications/ingest",
+                data={"payload": json.dumps(payload)},
+                headers=self.auth_headers(),
+            )
+            second_response = self.client.post(
+                "/api/notifications/ingest",
+                data={"payload": json.dumps(reposted_payload)},
+                headers=self.auth_headers(),
+            )
+
+        self.assertEqual(first_response.status_code, 202)
+        self.assertEqual(second_response.status_code, 202)
+        self.assertFalse(first_response.get_json()["duplicate"])
+        self.assertTrue(second_response.get_json()["duplicate"])
+        self.assertEqual(
+            first_response.get_json()["notification"]["id"],
+            second_response.get_json()["notification"]["id"],
+        )
+        self.assertEqual(len(conn.received_notifications), 1)
+        dispatch_webhook.assert_called_once()
+
     def test_notification_ingest_normalizes_phone_number_sender(self):
         conn = FakeMariaDBConnection()
         payload = {

@@ -426,12 +426,17 @@ def register_notification_routes(app):
         try:
             conn = open_database()
             init_database(conn)
-            notification = save_incoming_notification(
+            notification, created = save_incoming_notification(
                 conn, payload, media_bytes=media_bytes, media_mime_type=media_mime_type
             )
-            dispatch_webhook(build_webhook_event(notification))
+            if created:
+                dispatch_webhook(build_webhook_event(notification))
             return jsonify(
-                {"success": True, "notification": serialize_notification(notification)}
+                {
+                    "success": True,
+                    "duplicate": not created,
+                    "notification": serialize_notification(notification),
+                }
             ), 202
         except ValueError as exc:
             return json_error(str(exc), 400)
@@ -510,6 +515,9 @@ def parse_notification_payload():
 
     if not isinstance(payload, dict):
         raise ValueError("payload is required and must be a JSON object.")
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("messages is required and must be a non-empty list.")
     return payload
 
 

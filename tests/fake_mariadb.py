@@ -68,6 +68,10 @@ class FakeCursor:
             self.result = self._find_notification_by_id(params[0])
             return
 
+        if normalized.startswith("select * from received_notifications where dedup_key"):
+            self.result = self._find_notification_by_dedup_key(params[0])
+            return
+
         if normalized.startswith("select * from received_notifications order by id desc"):
             self.result = self._list_notifications(limit=params[0])
             return
@@ -158,11 +162,22 @@ class FakeCursor:
             self.result = self._device_column(params[0])
             return
 
+        if normalized.startswith("show columns from received_notifications like"):
+            self.result = self._received_notification_column(params[0])
+            return
+
         if normalized.startswith("show index from devices where key_name"):
             self.result = self._device_index(params[0])
             return
 
+        if normalized.startswith("show index from received_notifications where key_name"):
+            self.result = self._received_notification_index(params[0])
+            return
+
         if normalized.startswith("alter table devices"):
+            return
+
+        if normalized.startswith("alter table received_notifications"):
             return
 
         raise AssertionError(f"unexpected query: {query}")
@@ -261,16 +276,35 @@ class FakeCursor:
         self.conn.next_job_id += 1
 
     def _insert_received_notification(self, params):
-        (
-            device_label,
-            package,
-            sender,
-            text,
-            mime_type,
-            media_path,
-            payload_json,
-            created_at,
-        ) = params
+        if len(params) == 8:
+            (
+                device_label,
+                package,
+                sender,
+                text,
+                mime_type,
+                media_path,
+                payload_json,
+                created_at,
+            ) = params
+            dedup_key = None
+        else:
+            (
+                device_label,
+                package,
+                sender,
+                text,
+                mime_type,
+                media_path,
+                payload_json,
+                dedup_key,
+                created_at,
+            ) = params
+        if dedup_key is not None:
+            for notification in self.conn.received_notifications:
+                if notification.get("dedup_key") == dedup_key:
+                    raise mysql.connector.IntegrityError("duplicate notification")
+
         notification = {
             "id": self.conn.next_notification_id,
             "device_label": device_label,
@@ -280,6 +314,7 @@ class FakeCursor:
             "mime_type": mime_type,
             "media_path": media_path,
             "payload_json": payload_json,
+            "dedup_key": dedup_key,
             "created_at": created_at,
         }
         self.conn.received_notifications.append(notification)
@@ -289,6 +324,12 @@ class FakeCursor:
     def _find_notification_by_id(self, notification_id):
         for notification in self.conn.received_notifications:
             if notification["id"] == notification_id:
+                return copy.deepcopy(notification)
+        return None
+
+    def _find_notification_by_dedup_key(self, dedup_key):
+        for notification in self.conn.received_notifications:
+            if notification.get("dedup_key") == dedup_key:
                 return copy.deepcopy(notification)
         return None
 
@@ -423,6 +464,20 @@ class FakeCursor:
             "uq_devices_endpoint",
             "uq_devices_usb_serial",
             "idx_devices_locked_until",
+        }
+        if index_name in indexes:
+            return {"Key_name": index_name}
+        return None
+
+    def _received_notification_column(self, column):
+        columns = {
+            "dedup_key": ("dedup_key", "char(40)", "YES"),
+        }
+        return columns.get(column)
+
+    def _received_notification_index(self, index_name):
+        indexes = {
+            "uq_received_notifications_dedup",
         }
         if index_name in indexes:
             return {"Key_name": index_name}
