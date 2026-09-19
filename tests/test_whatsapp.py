@@ -925,6 +925,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             WHATSAPP_MESSENGER_PACKAGE,
             text="caption",
             mime_type="audio/mpeg",
+            adb_transport="wifi",
         )
         click_send_button.assert_not_called()
 
@@ -954,6 +955,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             WHATSAPP_MESSENGER_PACKAGE,
             text="caption",
             mime_type="image/jpeg",
+            adb_transport="wifi",
         )
         click_send_button.assert_not_called()
 
@@ -990,6 +992,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             WHATSAPP_BUSINESS_PACKAGE,
             text=None,
             mime_type="video/mp4",
+            adb_transport="wifi",
         )
         click_send_button.assert_not_called()
 

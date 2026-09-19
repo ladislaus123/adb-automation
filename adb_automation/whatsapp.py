@@ -740,6 +740,7 @@ def send_whatsapp(
                     whatsapp_package,
                     text=text,
                     mime_type=mime_type,
+                    adb_transport=adb_transport,
                 )
                 print("[+] Transmission automated successfully!")
                 return

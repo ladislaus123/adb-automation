@@ -2,7 +2,14 @@ import re
 import time
 import xml.etree.ElementTree as ET
 
-from .adb import run_adb
+from .adb import connect_wifi_device, run_adb, wake_and_unlock_device
+from .config import (
+    APPIUM_RECONNECT_ON_WEDGE_ENV_VAR,
+    APPIUM_REBOOT_ON_WEDGE_ENV_VAR,
+    APPIUM_SETTLE_SECONDS_ENV_VAR,
+    env_bool,
+    env_int,
+)
 from .errors import AdbError, AutomationError
 
 DUMP_REMOTE_PATH = "/sdcard/window_dump.xml"
@@ -10,25 +17,178 @@ BOUNDS_PATTERN = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 
 
 STALE_CLEAR_SETTLE_SECONDS = 0.3
+UIAUTOMATION_SETTLE_SECONDS_DEFAULT = 3
+UIAUTOMATION_REBOOT_WAIT_SECONDS = 120
+UIAUTOMATION_REBOOT_POLL_SECONDS = 5
+# Covers both a stray Appium UiAutomator2 server and an openatx
+# python-uiautomator2 agent -- either one left installed can re-register the
+# on-device UiAutomation connection the moment it's poked (e.g. by another
+# job on the same device), which a plain process kill won't prevent.
+UIAUTOMATION_TEST_PACKAGES = (
+    "io.appium.uiautomator2.server",
+    "io.appium.uiautomator2.server.test",
+    "com.github.uiautomator",
+    "com.github.uiautomator.test",
+)
 
 
-def dump_ui_xml(serial, run_adb_command=run_adb, sleep=time.sleep):
+def is_wifi_adb_transport(adb_transport):
+    return str(adb_transport or "wifi").strip().lower() == "wifi"
+
+
+def uiautomation_settle_seconds():
+    return env_int(APPIUM_SETTLE_SECONDS_ENV_VAR, UIAUTOMATION_SETTLE_SECONDS_DEFAULT)
+
+
+def uninstall_uiautomation_test_packages(serial, run_adb_command=run_adb):
+    print("[*] Uninstalling leftover UiAutomator2/uiautomator test packages...")
+    for package in UIAUTOMATION_TEST_PACKAGES:
+        try:
+            run_adb_command(["uninstall", package], serial=serial)
+        except AutomationError:
+            pass
+
+
+def reconnect_adb_transport(serial, run_adb_command=run_adb, adb_transport="wifi"):
+    """Re-establish the adb transport without touching the cable.
+
+    `adb reconnect` asks adbd to drop and reopen its connection to the host
+    over whatever transport is already in use -- USB included -- so it's the
+    software equivalent of unplugging and replugging the cable. Wi-Fi devices
+    additionally get a plain `adb connect host:port`, since their transport
+    can also drop at the TCP layer, which a bare `reconnect` doesn't re-dial.
+    """
+    try:
+        run_adb_command(["reconnect"], serial=serial)
+    except AutomationError as exc:
+        print(f"[WARN] adb reconnect failed: {exc}")
+
+    if is_wifi_adb_transport(adb_transport):
+        try:
+            connect_wifi_device(serial)
+        except AutomationError as exc:
+            print(f"[WARN] Could not re-establish Wi-Fi ADB connection: {exc}")
+
+
+def reboot_device_and_wait(
+    serial,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    adb_transport="wifi",
+):
+    print(
+        f"[*] Rebooting {serial} to clear a wedged UiAutomation registration "
+        "(last resort)..."
+    )
+    try:
+        run_adb_command(["reboot"], serial=serial)
+    except AutomationError as exc:
+        print(f"[WARN] adb reboot failed: {exc}")
+        return
+
+    attempts = UIAUTOMATION_REBOOT_WAIT_SECONDS // UIAUTOMATION_REBOOT_POLL_SECONDS
+    for _ in range(attempts):
+        sleep(UIAUTOMATION_REBOOT_POLL_SECONDS)
+        if is_wifi_adb_transport(adb_transport):
+            try:
+                connect_wifi_device(serial)
+            except AutomationError:
+                continue
+        try:
+            boot_completed = run_adb_command(
+                ["shell", "getprop", "sys.boot_completed"], serial=serial
+            )
+        except AutomationError:
+            continue
+        if boot_completed and boot_completed.strip() == "1":
+            break
+    else:
+        print(
+            f"[WARN] {serial} did not come back within "
+            f"{UIAUTOMATION_REBOOT_WAIT_SECONDS}s after reboot"
+        )
+        return
+
+    sleep(uiautomation_settle_seconds())
+    try:
+        wake_and_unlock_device(serial, run_adb_command=run_adb_command, sleep=sleep)
+    except AutomationError as exc:
+        print(f"[WARN] Could not wake/unlock {serial} after reboot: {exc}")
+
+
+def build_uiautomation_recovery_ladder():
+    """Escalating recovery steps for a wedged on-device UiAutomation slot.
+
+    Level 1 (kill) alone is not reliable on newer Android (observed on API
+    36+): force-stopping the client that registered the UiAutomation
+    connection can leave the registration stale in system_server even though
+    the client process is gone. Each further level is a strictly bigger
+    hammer, tried only after the previous one failed to unwedge the device.
+    """
+
+    def level_kill(serial, run_adb_command, sleep, adb_transport):
+        clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
+        sleep(STALE_CLEAR_SETTLE_SECONDS)
+
+    def level_uninstall(serial, run_adb_command, sleep, adb_transport):
+        uninstall_uiautomation_test_packages(serial, run_adb_command=run_adb_command)
+        sleep(STALE_CLEAR_SETTLE_SECONDS)
+
+    def level_reconnect(serial, run_adb_command, sleep, adb_transport):
+        reconnect_adb_transport(
+            serial,
+            run_adb_command=run_adb_command,
+            adb_transport=adb_transport,
+        )
+        sleep(uiautomation_settle_seconds())
+
+    def level_reboot(serial, run_adb_command, sleep, adb_transport):
+        reboot_device_and_wait(
+            serial,
+            run_adb_command=run_adb_command,
+            sleep=sleep,
+            adb_transport=adb_transport,
+        )
+
+    ladder = [level_kill, level_uninstall]
+    if env_bool(APPIUM_RECONNECT_ON_WEDGE_ENV_VAR, True):
+        ladder.append(level_reconnect)
+    if env_bool(APPIUM_REBOOT_ON_WEDGE_ENV_VAR, False):
+        ladder.append(level_reboot)
+    return ladder
+
+
+def dump_ui_xml(serial, run_adb_command=run_adb, sleep=time.sleep, adb_transport="wifi"):
     try:
         run_adb_command(
             ["shell", "uiautomator", "dump", DUMP_REMOTE_PATH], serial=serial
         )
-    except AdbError:
-        # A stale UiAutomation registration (leftover uiautomator2/Appium
-        # instrumentation) makes this crash with "already registered" and no
-        # output. Clear it once and retry before giving up. The settle sleep
-        # gives the OS a moment to actually release the registration after
-        # the kill before we retry.
-        clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
-        sleep(STALE_CLEAR_SETTLE_SECONDS)
-        run_adb_command(
-            ["shell", "uiautomator", "dump", DUMP_REMOTE_PATH], serial=serial
+        return run_adb_command(["shell", "cat", DUMP_REMOTE_PATH], serial=serial)
+    except AdbError as exc:
+        last_error = exc
+
+    # A stale UiAutomation registration (leftover uiautomator2/Appium
+    # instrumentation) makes the dump above crash with "already registered"
+    # and no output. Escalate through the recovery ladder, retrying the dump
+    # after each level, instead of giving up after one quick kill+retry --
+    # see build_uiautomation_recovery_ladder() for why a kill alone isn't
+    # always enough on newer Android.
+    ladder = build_uiautomation_recovery_ladder()
+    for level, recover in enumerate(ladder, start=1):
+        print(
+            f"[WARN] uiautomator dump failed (stale UiAutomation?); "
+            f"running recovery level {level}/{len(ladder)}: {last_error}"
         )
-    return run_adb_command(["shell", "cat", DUMP_REMOTE_PATH], serial=serial)
+        recover(serial, run_adb_command, sleep, adb_transport)
+        try:
+            run_adb_command(
+                ["shell", "uiautomator", "dump", DUMP_REMOTE_PATH], serial=serial
+            )
+            return run_adb_command(["shell", "cat", DUMP_REMOTE_PATH], serial=serial)
+        except AdbError as exc:
+            last_error = exc
+
+    raise last_error
 
 
 def is_stale_uiautomation_error(exc):
@@ -153,10 +313,16 @@ def wait_for_first(
     interval=0.3,
     run_adb_command=run_adb,
     sleep=time.sleep,
+    adb_transport="wifi",
 ):
     deadline = time.monotonic() + timeout
     while True:
-        xml_text = dump_ui_xml(serial, run_adb_command=run_adb_command)
+        xml_text = dump_ui_xml(
+            serial,
+            run_adb_command=run_adb_command,
+            sleep=sleep,
+            adb_transport=adb_transport,
+        )
         elements = parse_ui_dump(xml_text)
         found = find_first(elements, selectors)
         if found is not None:
@@ -173,6 +339,7 @@ def click_first(
     interval=0.3,
     run_adb_command=run_adb,
     sleep=time.sleep,
+    adb_transport="wifi",
 ):
     element = wait_for_first(
         serial,
@@ -181,6 +348,7 @@ def click_first(
         interval=interval,
         run_adb_command=run_adb_command,
         sleep=sleep,
+        adb_transport=adb_transport,
     )
     if element is None:
         return False
