@@ -203,6 +203,38 @@ class WhatsappSendButtonTests(unittest.TestCase):
 
         self.assertTrue(target.clicked)
 
+    def test_click_send_button_accepts_alternate_send_button_resource_id(self):
+        device = FakeUiDevice()
+        target = device.add_selector(
+            {"resourceId": f"{WHATSAPP_MESSENGER_PACKAGE}:id/send_button"}
+        )
+        device.add_selector({"resourceId": f"{WHATSAPP_MESSENGER_PACKAGE}:id/entry"})
+
+        whatsapp.click_send_button(
+            "192.168.10.21:5555",
+            WHATSAPP_MESSENGER_PACKAGE,
+            timeout=0,
+            device_connector=lambda serial: device,
+        )
+
+        self.assertTrue(target.clicked)
+
+    def test_click_send_button_accepts_alternate_media_send_resource_id(self):
+        device = FakeUiDevice()
+        target = device.add_selector(
+            {"resourceId": f"{WHATSAPP_MESSENGER_PACKAGE}:id/send_media_btn"}
+        )
+        device.add_selector({"resourceId": f"{WHATSAPP_MESSENGER_PACKAGE}:id/entry"})
+
+        whatsapp.click_send_button(
+            "192.168.10.21:5555",
+            WHATSAPP_MESSENGER_PACKAGE,
+            timeout=0,
+            device_connector=lambda serial: device,
+        )
+
+        self.assertTrue(target.clicked)
+
     def test_click_send_button_raises_when_element_is_missing(self):
         device = FakeUiDevice()
 

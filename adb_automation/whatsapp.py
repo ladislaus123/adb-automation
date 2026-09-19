@@ -12,7 +12,11 @@ from .errors import (
     WhatsAppRestrictedError,
 )
 
-SEND_BUTTON_RESOURCE_NAME = "send"
+SEND_BUTTON_RESOURCE_NAMES = (
+    "send",
+    "send_button",
+    "send_media_btn",
+)
 SEND_BUTTON_DESCRIPTIONS = (
     "Send",
     "Enviar",
@@ -109,8 +113,14 @@ def connect_uiautomator_device(serial):
 
 def send_button_selectors(whatsapp_package):
     return (
-        {"resourceId": f"{whatsapp_package}:id/{SEND_BUTTON_RESOURCE_NAME}"},
-        {"resourceIdMatches": rf".*:id/{SEND_BUTTON_RESOURCE_NAME}"},
+        *(
+            {"resourceId": f"{whatsapp_package}:id/{resource_name}"}
+            for resource_name in SEND_BUTTON_RESOURCE_NAMES
+        ),
+        *(
+            {"resourceIdMatches": rf".*:id/{resource_name}"}
+            for resource_name in SEND_BUTTON_RESOURCE_NAMES
+        ),
         *({"description": description} for description in SEND_BUTTON_DESCRIPTIONS),
         *(
             {"descriptionContains": description}
