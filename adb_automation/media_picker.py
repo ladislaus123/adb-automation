@@ -127,6 +127,7 @@ def select_latest_media_from_attach_menu(
     mime_type=None,
     run_adb_command=run_adb,
     sleep=time.sleep,
+    adb_transport="wifi",
 ):
     tap_fixed_point(serial, ATTACH_BUTTON_COORDS, run_adb_command=run_adb_command)
     sleep(WAIT_AFTER_ATTACH_SECONDS)
@@ -143,6 +144,7 @@ def select_latest_media_from_attach_menu(
         timeout=MEDIA_ITEM_TIMEOUT_SECONDS,
         run_adb_command=run_adb_command,
         sleep=sleep,
+        adb_transport=adb_transport,
     )
     if not selected:
         # On some devices/WhatsApp versions the attach sheet's "recent media"
@@ -155,6 +157,7 @@ def select_latest_media_from_attach_menu(
             timeout=SOURCE_TIMEOUT_SECONDS,
             run_adb_command=run_adb_command,
             sleep=sleep,
+            adb_transport=adb_transport,
         ):
             sleep(WAIT_AFTER_ATTACH_SECONDS)
             selected = click_first(
@@ -163,6 +166,7 @@ def select_latest_media_from_attach_menu(
                 timeout=MEDIA_ITEM_TIMEOUT_SECONDS,
                 run_adb_command=run_adb_command,
                 sleep=sleep,
+                adb_transport=adb_transport,
             )
 
     if not selected:
@@ -179,6 +183,7 @@ def enter_caption_and_send(
     caption=None,
     run_adb_command=run_adb,
     sleep=time.sleep,
+    adb_transport="wifi",
 ):
     if caption:
         tap_fixed_point(serial, CAPTION_FIELD_COORDS, run_adb_command=run_adb_command)
@@ -188,7 +193,13 @@ def enter_caption_and_send(
     tap_fixed_point(serial, SEND_BUTTON_COORDS, run_adb_command=run_adb_command)
     sleep(WAIT_AFTER_SEND_SECONDS)
 
-    verify_media_was_sent(serial, whatsapp_package, run_adb_command=run_adb_command)
+    verify_media_was_sent(
+        serial,
+        whatsapp_package,
+        run_adb_command=run_adb_command,
+        sleep=sleep,
+        adb_transport=adb_transport,
+    )
 
 
 def write_debug_dump(filename, xml_text):
@@ -200,14 +211,25 @@ def write_debug_dump(filename, xml_text):
         print(f"[WARN] Could not write {filename}: {exc}")
 
 
-def verify_media_was_sent(serial, whatsapp_package, run_adb_command=run_adb):
+def verify_media_was_sent(
+    serial,
+    whatsapp_package,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    adb_transport="wifi",
+):
     # The only dump call left in the whole media-send flow: a single
     # safety-net check that the "send" tap actually landed, instead of
     # silently reporting success on a missed/blind tap.
     clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
 
     try:
-        xml_text = dump_ui_xml(serial, run_adb_command=run_adb_command)
+        xml_text = dump_ui_xml(
+            serial,
+            run_adb_command=run_adb_command,
+            sleep=sleep,
+            adb_transport=adb_transport,
+        )
     except AutomationError as exc:
         raise AutomationError(
             f"Could not verify whether the media was actually sent: {exc}"
@@ -236,6 +258,7 @@ def send_media_via_gallery_picker(
     mime_type=None,
     run_adb_command=run_adb,
     sleep=time.sleep,
+    adb_transport="wifi",
 ):
     # A leftover uiautomator2/Appium instrumentation process from a prior job
     # on this device (e.g. a text send, or this same flow's own tail end)
@@ -271,6 +294,7 @@ def send_media_via_gallery_picker(
             mime_type=mime_type,
             run_adb_command=run_adb_command,
             sleep=sleep,
+            adb_transport=adb_transport,
         )
         enter_caption_and_send(
             serial,
@@ -278,6 +302,7 @@ def send_media_via_gallery_picker(
             caption=text,
             run_adb_command=run_adb_command,
             sleep=sleep,
+            adb_transport=adb_transport,
         )
     finally:
         cleanup_staged_media(
