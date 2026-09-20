@@ -6,6 +6,7 @@ import sys
 import time
 from contextlib import contextmanager
 
+from .config import ADB_COMMAND_TIMEOUT_ENV_VAR, env_int
 from .devices import ADB_TRANSPORT_USB, ADB_TRANSPORT_WIFI, normalize_adb_transport
 from .errors import AdbError
 
@@ -46,6 +47,11 @@ DISPLAY_ROTATION_PATTERNS = (
 ROTATION_DEGREES_TO_INDEX = {0: 0, 90: 1, 180: 2, 270: 3}
 ENSURE_PORTRAIT_ATTEMPTS = 3
 ENSURE_PORTRAIT_RETRY_DELAY_SECONDS = 0.6
+DEFAULT_ADB_COMMAND_TIMEOUT_SECONDS = 30
+
+
+def adb_command_timeout_seconds():
+    return env_int(ADB_COMMAND_TIMEOUT_ENV_VAR, DEFAULT_ADB_COMMAND_TIMEOUT_SECONDS)
 
 
 def _find_adb():
@@ -64,11 +70,14 @@ def _find_adb():
 _ADB = _find_adb()
 
 
-def run_adb(command_list, serial=None):
+def run_adb(command_list, serial=None, timeout=None):
     command = [_ADB]
     if serial:
         command.extend(["-s", serial])
     command.extend(command_list)
+
+    if timeout is None:
+        timeout = adb_command_timeout_seconds()
 
     try:
         result = subprocess.run(
@@ -78,11 +87,22 @@ def run_adb(command_list, serial=None):
             encoding="utf-8",
             errors="replace",
             check=True,
+            timeout=timeout,
         )
         return result.stdout
     except FileNotFoundError as exc:
         raise AdbError(
             "ADB was not found. Install Android platform-tools or add adb to PATH."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run() already killed the hung child on timeout, which
+        # closes its socket to the local adb server daemon. Without a
+        # timeout here, a wedged `uiautomator dump` never returns and holds
+        # that device's transport locked in the daemon, so every later adb
+        # command for the same serial -- including recovery-ladder attempts
+        # issued from this same process -- queues behind it indefinitely.
+        raise AdbError(
+            f"adb command timed out after {timeout}s: {' '.join(command)}"
         ) from exc
     except subprocess.CalledProcessError as exc:
         details = "\n".join(
@@ -91,6 +111,20 @@ def run_adb(command_list, serial=None):
         if not details:
             details = f"command failed: {' '.join(command)}"
         raise AdbError(details) from exc
+
+
+def restart_local_adb_server():
+    """Reset the host-side adb server daemon, not the device.
+
+    `adb kill-server` drops every client connection the daemon is holding
+    open, including one wedged on a stuck USB transport lock for a device
+    stuck mid-command. The next `adb` invocation (for any device) respawns
+    the daemon automatically, so an explicit `start-server` isn't required,
+    but running it here makes the reset happen immediately instead of on
+    whichever command happens to run next.
+    """
+    subprocess.run([_ADB, "kill-server"], check=False)
+    subprocess.run([_ADB, "start-server"], check=False)
 
 
 def get_connected_device_states():
