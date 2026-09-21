@@ -8,7 +8,7 @@ from contextlib import contextmanager
 
 from .config import ADB_COMMAND_TIMEOUT_ENV_VAR, env_int
 from .devices import ADB_TRANSPORT_USB, ADB_TRANSPORT_WIFI, normalize_adb_transport
-from .errors import AdbError
+from .errors import AdbError, AutomationError
 
 SCREEN_OFF_PATTERNS = (
     re.compile(r"\bmWakefulness=Asleep\b"),
@@ -113,23 +113,9 @@ def run_adb(command_list, serial=None, timeout=None):
         raise AdbError(details) from exc
 
 
-def restart_local_adb_server():
-    """Reset the host-side adb server daemon, not the device.
-
-    `adb kill-server` drops every client connection the daemon is holding
-    open, including one wedged on a stuck USB transport lock for a device
-    stuck mid-command. The next `adb` invocation (for any device) respawns
-    the daemon automatically, so an explicit `start-server` isn't required,
-    but running it here makes the reset happen immediately instead of on
-    whichever command happens to run next.
-    """
-    subprocess.run([_ADB, "kill-server"], check=False)
-    subprocess.run([_ADB, "start-server"], check=False)
-
-
-def get_connected_device_states():
+def get_connected_device_states(run_adb_command=run_adb):
     """Return ADB serials mapped to connection states."""
-    output = run_adb(["devices"])
+    output = run_adb_command(["devices"])
     devices = {}
 
     for line in output.splitlines()[1:]:
@@ -138,6 +124,38 @@ def get_connected_device_states():
             devices[parts[0]] = parts[1]
 
     return devices
+
+
+DEVICE_REAPPEAR_TIMEOUT_SECONDS = 20
+DEVICE_REAPPEAR_POLL_SECONDS = 1
+
+
+def wait_for_device_visible(
+    serial,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    timeout_seconds=DEVICE_REAPPEAR_TIMEOUT_SECONDS,
+    poll_seconds=DEVICE_REAPPEAR_POLL_SECONDS,
+):
+    """Poll `adb devices` until `serial` reappears, bounded by timeout_seconds.
+
+    Rebooting the device drops it out of `adb devices` until it finishes
+    booting and the daemon re-enumerates its USB transport, which can take
+    longer than a fixed settle sleep -- especially with several devices
+    sharing a hub. Issuing the next adb command before it reappears just
+    fails with "device not found", so wait here first instead of assuming a
+    fixed sleep was long enough.
+    """
+    attempts = max(1, timeout_seconds // poll_seconds)
+    for _ in range(attempts):
+        try:
+            states = get_connected_device_states(run_adb_command=run_adb_command)
+        except AutomationError:
+            states = {}
+        if serial in states:
+            return True
+        sleep(poll_seconds)
+    return False
 
 
 def connect_wifi_device(serial):

@@ -80,6 +80,116 @@ class DumpUiXmlTests(unittest.TestCase):
             adb_ui.dump_ui_xml("serial", run_adb_command=run_adb)
 
 
+class WaitForDeviceVisibleTests(unittest.TestCase):
+    def _devices_output(self, serial=None, state="device"):
+        if serial is None:
+            return "List of devices attached\n\n"
+        return f"List of devices attached\n{serial}\t{state}\n\n"
+
+    def test_returns_true_immediately_when_device_already_visible(self):
+        sleeps = []
+
+        def run_adb(command, serial=None):
+            self.assertEqual(command, ["devices"])
+            return self._devices_output("R9QL2002M9N")
+
+        result = adb_ui.wait_for_device_visible(
+            "R9QL2002M9N", run_adb_command=run_adb, sleep=sleeps.append
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(sleeps, [])
+
+    def test_polls_until_device_reappears_within_timeout(self):
+        sleeps = []
+        outputs = [
+            self._devices_output(None),
+            self._devices_output(None),
+            self._devices_output("R9QL2002M9N"),
+        ]
+
+        def run_adb(command, serial=None):
+            return outputs.pop(0)
+
+        result = adb_ui.wait_for_device_visible(
+            "R9QL2002M9N",
+            run_adb_command=run_adb,
+            sleep=sleeps.append,
+            timeout_seconds=5,
+            poll_seconds=1,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(sleeps, [1, 1])
+
+    def test_returns_false_when_device_never_reappears(self):
+        def run_adb(command, serial=None):
+            return self._devices_output(None)
+
+        result = adb_ui.wait_for_device_visible(
+            "R9QL2002M9N",
+            run_adb_command=run_adb,
+            sleep=lambda seconds: None,
+            timeout_seconds=3,
+            poll_seconds=1,
+        )
+
+        self.assertFalse(result)
+
+    def test_treats_adb_devices_failure_as_not_visible(self):
+        def run_adb(command, serial=None):
+            raise AutomationError("adb server not running")
+
+        result = adb_ui.wait_for_device_visible(
+            "R9QL2002M9N",
+            run_adb_command=run_adb,
+            sleep=lambda seconds: None,
+            timeout_seconds=2,
+            poll_seconds=1,
+        )
+
+        self.assertFalse(result)
+
+
+class RebootDeviceAndWaitTests(unittest.TestCase):
+    def test_skips_reboot_when_device_not_visible(self):
+        calls = []
+
+        def run_adb(command, serial=None):
+            calls.append(command)
+            if command == ["devices"]:
+                return "List of devices attached\n\n"
+            raise AssertionError(f"unexpected command: {command}")
+
+        adb_ui.reboot_device_and_wait(
+            "R9QL2002M9N",
+            run_adb_command=run_adb,
+            sleep=lambda seconds: None,
+        )
+
+        self.assertNotIn(["reboot"], calls)
+
+    def test_reboots_when_device_is_visible(self):
+        calls = []
+
+        def run_adb(command, serial=None):
+            calls.append(command)
+            if command == ["devices"]:
+                return "List of devices attached\nR9QL2002M9N\tdevice\n\n"
+            if command == ["shell", "getprop", "sys.boot_completed"]:
+                return "1"
+            return ""
+
+        adb_ui.reboot_device_and_wait(
+            "R9QL2002M9N",
+            run_adb_command=run_adb,
+            sleep=lambda seconds: None,
+            adb_transport="usb",
+        )
+
+        self.assertIn(["reboot"], calls)
+
+
 class BoundsTests(unittest.TestCase):
     def test_parse_bounds(self):
         self.assertEqual(adb_ui.parse_bounds("[10,20][50,60]"), (10, 20, 50, 60))

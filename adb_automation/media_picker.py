@@ -2,23 +2,14 @@ import re
 import time
 
 from .adb import run_adb
-from .adb_ui import (
-    clear_stale_uiautomation,
-    click_first,
-    dump_ui_xml,
-    find_first,
-    parse_ui_dump,
-    tap_point,
-)
+from .adb_ui import tap_point
 from .appium_media import (
     cleanup_staged_media,
-    media_item_selectors,
-    media_source_selectors,
     open_whatsapp_chat,
-    send_selectors,
     stage_latest_media,
+    stop_u2_uiautomator,
 )
-from .errors import AutomationError, WhatsAppRestrictedError
+from .errors import AutomationError
 
 # Coordinates below were captured once, by hand, on R9XY3034HMX (SM-A065M,
 # 720x1600) running WhatsApp 2.26.32.78 / Business 2.26.31.75 — the newest
@@ -28,13 +19,13 @@ from .errors import AutomationError, WhatsAppRestrictedError
 # UiAutomation client (Appium, python uiautomator2) for the same single
 # on-device registration slot, a job with that many dump calls kept colliding
 # with leftover processes and wedging ("stale UiAutomation session"). Tapping
-# fixed, pre-measured coordinates removes most of that exposure — see
-# verify_media_was_sent() for one remaining dump call (safety net against a
-# silently-missed tap) and select_latest_media_from_attach_menu() for the
-# other (the attach sheet's resting height is NOT fixed — repeated opens on
-# the same device measured 901px, 615px, and 928px, seemingly due to
-# thumbnail-load timing or server-side feature flags — so the media
-# thumbnail's position genuinely can't be hardcoded; it still needs a dump).
+# fixed, pre-measured coordinates removes most of that exposure. The two
+# remaining variable-position lookups (the media thumbnail in
+# select_latest_media_from_attach_menu, and the post-send confirmation in
+# verify_media_was_sent) go through the same uiautomator2 client the text-send
+# flow uses (see whatsapp.py) instead of a raw `uiautomator dump` -- that
+# keeps this flow to a single well-behaved UiAutomation consumer per job
+# instead of mixing it with the raw dump tool.
 REFERENCE_SCREEN_SIZE = (720, 1600)
 ATTACH_BUTTON_COORDS = (461, 1456)
 CAPTION_FIELD_COORDS = (326, 1450)
@@ -47,7 +38,9 @@ CAPTION_FOCUS_SETTLE_SECONDS = 0.4
 CHAT_READY_SETTLE_SECONDS = 1.0
 MEDIA_ITEM_TIMEOUT_SECONDS = 6
 SOURCE_TIMEOUT_SECONDS = 2
-MEDIA_SEND_UNVERIFIED_DUMP = "debug_media_send_unverified.xml"
+SEND_CONFIRM_TIMEOUT_SECONDS = 5
+SEND_CONFIRM_POLL_SECONDS = 0.2
+SELECTOR_RETRY_INTERVAL_SECONDS = 0.25
 
 SCREEN_SIZE_PATTERN = re.compile(r"(\d+)x(\d+)")
 
@@ -79,21 +72,6 @@ def tap_fixed_point(serial, coords, run_adb_command=run_adb):
     tap_point(serial, x, y, run_adb_command=run_adb_command)
 
 
-def ui_dump_has_whatsapp_restricted_text(xml_text):
-    from .whatsapp import text_matches_whatsapp_restricted
-
-    try:
-        elements = parse_ui_dump(xml_text)
-    except AutomationError:
-        return False
-
-    return any(
-        text_matches_whatsapp_restricted(element.get(field))
-        for element in elements
-        for field in ("text", "content_desc")
-    )
-
-
 def verify_whatsapp_chat_ready(
     serial,
     whatsapp_package,
@@ -121,6 +99,61 @@ def _type_caption(serial, caption, run_adb_command=run_adb):
     )
 
 
+def media_item_selector_kwargs(whatsapp_package):
+    return ({"resourceId": f"{whatsapp_package}:id/media_item_view"},)
+
+
+def gallery_media_source_selector_kwargs(whatsapp_package):
+    return (
+        {"resourceId": f"{whatsapp_package}:id/pickfiletype_gallery_holder"},
+        {"description": "Galeria"},
+        {"description": "Gallery"},
+    )
+
+
+def audio_media_source_selector_kwargs(whatsapp_package):
+    return (
+        {"resourceId": f"{whatsapp_package}:id/pickfiletype_audio_holder"},
+        {"description": "Áudio"},
+        {"description": "Audio"},
+    )
+
+
+def media_source_selector_kwargs(whatsapp_package, mime_type):
+    from .appium_media import is_audio_mime, is_image_mime, is_video_mime
+
+    if is_audio_mime(mime_type):
+        return audio_media_source_selector_kwargs(whatsapp_package)
+    if is_image_mime(mime_type) or is_video_mime(mime_type):
+        return gallery_media_source_selector_kwargs(whatsapp_package)
+    return ()
+
+
+def wait_and_click_first(device, selector_kwargs_list, timeout, sleep=time.sleep):
+    """Poll `selector_kwargs_list` with uiautomator2 until one exists, click it.
+
+    Mirrors whatsapp.click_send_button's own retry loop so this flow shares
+    its resilience to a slow-to-render UI, instead of the old
+    dump-then-parse-then-tap approach.
+    """
+    from .whatsapp import raise_if_whatsapp_restricted, selector_exists
+
+    deadline = time.monotonic() + timeout
+    while True:
+        raise_if_whatsapp_restricted(device)
+        for selector_kwargs in selector_kwargs_list:
+            try:
+                selector = device(**selector_kwargs)
+                if selector_exists(selector):
+                    selector.click()
+                    return True
+            except Exception:
+                continue
+        if time.monotonic() >= deadline:
+            return False
+        sleep(SELECTOR_RETRY_INTERVAL_SECONDS)
+
+
 def select_latest_media_from_attach_menu(
     serial,
     whatsapp_package,
@@ -128,45 +161,39 @@ def select_latest_media_from_attach_menu(
     run_adb_command=run_adb,
     sleep=time.sleep,
     adb_transport="wifi",
+    device_connector=None,
 ):
+    from .whatsapp import connect_uiautomator_device, wait_for_whatsapp_activity
+
+    if device_connector is None:
+        device_connector = connect_uiautomator_device
+
     tap_fixed_point(serial, ATTACH_BUTTON_COORDS, run_adb_command=run_adb_command)
     sleep(WAIT_AFTER_ATTACH_SECONDS)
 
-    # The attach sheet's resting height varies between opens (see module
-    # comment above), so the thumbnail can't be a fixed coordinate — locate
-    # it by resource-id instead. Clear any leftover UiAutomation holder
-    # first: this is the first dump in the job, so nothing upstream would
-    # have caught a stale session yet.
-    clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
-    selected = click_first(
-        serial,
-        media_item_selectors(whatsapp_package),
-        timeout=MEDIA_ITEM_TIMEOUT_SECONDS,
-        run_adb_command=run_adb_command,
+    device = device_connector(serial)
+    wait_for_whatsapp_activity(device, whatsapp_package)
+
+    selected = wait_and_click_first(
+        device,
+        media_item_selector_kwargs(whatsapp_package),
+        MEDIA_ITEM_TIMEOUT_SECONDS,
         sleep=sleep,
-        adb_transport=adb_transport,
     )
     if not selected:
         # On some devices/WhatsApp versions the attach sheet's "recent media"
         # strip isn't shown by default and the "Galeria" tile has to be
         # tapped first to reveal it.
-        source_selectors = media_source_selectors(whatsapp_package, mime_type)
-        if source_selectors and click_first(
-            serial,
-            source_selectors,
-            timeout=SOURCE_TIMEOUT_SECONDS,
-            run_adb_command=run_adb_command,
-            sleep=sleep,
-            adb_transport=adb_transport,
+        source_kwargs = media_source_selector_kwargs(whatsapp_package, mime_type)
+        if source_kwargs and wait_and_click_first(
+            device, source_kwargs, SOURCE_TIMEOUT_SECONDS, sleep=sleep
         ):
             sleep(WAIT_AFTER_ATTACH_SECONDS)
-            selected = click_first(
-                serial,
-                media_item_selectors(whatsapp_package),
-                timeout=MEDIA_ITEM_TIMEOUT_SECONDS,
-                run_adb_command=run_adb_command,
+            selected = wait_and_click_first(
+                device,
+                media_item_selector_kwargs(whatsapp_package),
+                MEDIA_ITEM_TIMEOUT_SECONDS,
                 sleep=sleep,
-                adb_transport=adb_transport,
             )
 
     if not selected:
@@ -177,6 +204,55 @@ def select_latest_media_from_attach_menu(
     sleep(WAIT_AFTER_SELECT_MEDIA_SECONDS)
 
 
+def wait_for_send_button_gone(
+    device,
+    whatsapp_package,
+    timeout=SEND_CONFIRM_TIMEOUT_SECONDS,
+    sleep=time.sleep,
+):
+    from .whatsapp import selector_exists, send_button_selectors
+
+    deadline = time.monotonic() + timeout
+    while True:
+        still_showing = False
+        for selector_kwargs in send_button_selectors(whatsapp_package):
+            try:
+                if selector_exists(device(**selector_kwargs)):
+                    still_showing = True
+                    break
+            except Exception:
+                continue
+        if not still_showing:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        sleep(SEND_CONFIRM_POLL_SECONDS)
+
+
+def verify_media_was_sent(
+    serial,
+    whatsapp_package,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    adb_transport="wifi",
+    device_connector=None,
+):
+    from .whatsapp import connect_uiautomator_device, raise_if_whatsapp_restricted
+
+    if device_connector is None:
+        device_connector = connect_uiautomator_device
+
+    device = device_connector(serial)
+    if wait_for_send_button_gone(device, whatsapp_package, sleep=sleep):
+        return
+
+    raise_if_whatsapp_restricted(device)
+    raise AutomationError(
+        "Media appears unsent; the send button is still showing after "
+        "tapping send."
+    )
+
+
 def enter_caption_and_send(
     serial,
     whatsapp_package,
@@ -184,6 +260,7 @@ def enter_caption_and_send(
     run_adb_command=run_adb,
     sleep=time.sleep,
     adb_transport="wifi",
+    device_connector=None,
 ):
     if caption:
         tap_fixed_point(serial, CAPTION_FIELD_COORDS, run_adb_command=run_adb_command)
@@ -199,53 +276,7 @@ def enter_caption_and_send(
         run_adb_command=run_adb_command,
         sleep=sleep,
         adb_transport=adb_transport,
-    )
-
-
-def write_debug_dump(filename, xml_text):
-    try:
-        with open(filename, "w", encoding="utf-8") as output:
-            output.write(xml_text)
-        print(f"[DEBUG] UI dumped to {filename}")
-    except OSError as exc:
-        print(f"[WARN] Could not write {filename}: {exc}")
-
-
-def verify_media_was_sent(
-    serial,
-    whatsapp_package,
-    run_adb_command=run_adb,
-    sleep=time.sleep,
-    adb_transport="wifi",
-):
-    # The only dump call left in the whole media-send flow: a single
-    # safety-net check that the "send" tap actually landed, instead of
-    # silently reporting success on a missed/blind tap.
-    clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
-
-    try:
-        xml_text = dump_ui_xml(
-            serial,
-            run_adb_command=run_adb_command,
-            sleep=sleep,
-            adb_transport=adb_transport,
-        )
-    except AutomationError as exc:
-        raise AutomationError(
-            f"Could not verify whether the media was actually sent: {exc}"
-        ) from exc
-
-    elements = parse_ui_dump(xml_text)
-    if find_first(elements, send_selectors(whatsapp_package)) is None:
-        return
-
-    if ui_dump_has_whatsapp_restricted_text(xml_text):
-        raise WhatsAppRestrictedError("WhatsApp is restricted.")
-
-    write_debug_dump(MEDIA_SEND_UNVERIFIED_DUMP, xml_text)
-    raise AutomationError(
-        "Media appears unsent; the send button is still showing after "
-        "tapping send."
+        device_connector=device_connector,
     )
 
 
@@ -259,14 +290,8 @@ def send_media_via_gallery_picker(
     run_adb_command=run_adb,
     sleep=time.sleep,
     adb_transport="wifi",
+    device_connector=None,
 ):
-    # A leftover uiautomator2/Appium instrumentation process from a prior job
-    # on this device (e.g. a text send, or this same flow's own tail end)
-    # keeps the on-device UiAutomation connection registered, so every
-    # `uiautomator dump` below would crash with no output instead of
-    # returning the UI tree. Clear it before this send's first dump call.
-    clear_stale_uiautomation(serial, run_adb_command=run_adb_command)
-
     remote_path = stage_latest_media(
         serial,
         file_path,
@@ -295,6 +320,7 @@ def send_media_via_gallery_picker(
             run_adb_command=run_adb_command,
             sleep=sleep,
             adb_transport=adb_transport,
+            device_connector=device_connector,
         )
         enter_caption_and_send(
             serial,
@@ -303,8 +329,15 @@ def send_media_via_gallery_picker(
             run_adb_command=run_adb_command,
             sleep=sleep,
             adb_transport=adb_transport,
+            device_connector=device_connector,
         )
     finally:
+        # This flow now registers its own on-device UiAutomation connection
+        # via uiautomator2 (see select_latest_media_from_attach_menu /
+        # verify_media_was_sent), the same as the text-send flow -- force-stop
+        # it once we're done so it doesn't poison the next job's raw
+        # `uiautomator dump` calls (e.g. chat_navigation.py's debug dumps).
+        stop_u2_uiautomator(serial)
         cleanup_staged_media(
             serial,
             remote_path,

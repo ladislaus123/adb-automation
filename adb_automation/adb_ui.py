@@ -2,11 +2,15 @@ import re
 import time
 import xml.etree.ElementTree as ET
 
-from .adb import connect_wifi_device, restart_local_adb_server, run_adb, wake_and_unlock_device
+from .adb import (
+    connect_wifi_device,
+    run_adb,
+    wait_for_device_visible,
+    wake_and_unlock_device,
+)
 from .config import (
     APPIUM_RECONNECT_ON_WEDGE_ENV_VAR,
     APPIUM_REBOOT_ON_WEDGE_ENV_VAR,
-    APPIUM_RESTART_ADB_SERVER_ON_WEDGE_ENV_VAR,
     APPIUM_SETTLE_SECONDS_ENV_VAR,
     env_bool,
     env_int,
@@ -94,6 +98,13 @@ def reboot_device_and_wait(
         f"[*] Rebooting {serial} to clear a wedged UiAutomation registration "
         "(last resort)..."
     )
+    # `adb reboot` needs the device visible first, or it fails outright with
+    # "device not found" -- see wait_for_device_visible.
+    if not wait_for_device_visible(serial, run_adb_command=run_adb_command, sleep=sleep):
+        print(
+            f"[WARN] {serial} is not visible in `adb devices`; skipping reboot"
+        )
+        return
     try:
         run_adb_command(["reboot"], serial=serial)
     except AutomationError as exc:
@@ -156,25 +167,6 @@ def build_uiautomation_recovery_ladder():
             adb_transport=adb_transport,
         )
 
-    def level_restart_adb_server(serial, run_adb_command, sleep, adb_transport):
-        # Level 3 (reconnect) issues its `adb reconnect`/`connect` through the
-        # SAME local adb server daemon that a previously wedged `uiautomator
-        # dump` may still have a USB transport locked on -- if that daemon
-        # itself is stuck, every command routed through it for this serial
-        # queues behind the same lock and reconnect can't help. Killing and
-        # respawning the daemon (not the device, and not this process) drops
-        # that lock, which is the host-side equivalent of what restarting the
-        # whole server process was doing to unwedge it.
-        print(f"[*] Restarting local adb server daemon to clear a wedged transport lock...")
-        restart_local_adb_server()
-        sleep(uiautomation_settle_seconds())
-        reconnect_adb_transport(
-            serial,
-            run_adb_command=run_adb_command,
-            sleep=sleep,
-            adb_transport=adb_transport,
-        )
-
     def level_reboot(serial, run_adb_command, sleep, adb_transport):
         reboot_device_and_wait(
             serial,
@@ -186,8 +178,6 @@ def build_uiautomation_recovery_ladder():
     ladder = [level_kill, level_uninstall]
     if env_bool(APPIUM_RECONNECT_ON_WEDGE_ENV_VAR, True):
         ladder.append(level_reconnect)
-    if env_bool(APPIUM_RESTART_ADB_SERVER_ON_WEDGE_ENV_VAR, True):
-        ladder.append(level_restart_adb_server)
     if env_bool(APPIUM_REBOOT_ON_WEDGE_ENV_VAR, False):
         ladder.append(level_reboot)
     return ladder
