@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from unittest.mock import call, patch
+from unittest.mock import ANY, call, patch
 
 from adb_automation import adb, whatsapp
 from adb_automation.config import (
@@ -235,6 +235,39 @@ class WhatsappSendButtonTests(unittest.TestCase):
 
         self.assertTrue(target.clicked)
 
+    def test_click_send_button_uses_typed_field_to_catch_unsent_draft(self):
+        # Regression test: on some chat screens the real `:id/entry` compose
+        # field isn't matched, and the send-verification selector search
+        # falls back to a generic EditText that belongs to a *different*,
+        # already-empty widget. Without reusing the exact field we typed
+        # into, that false "empty" reading would make click_send_button
+        # report success while the real message is still a draft.
+        device = FakeUiDevice()
+        device.add_selector({"resourceId": f"{WHATSAPP_MESSENGER_PACKAGE}:id/send"})
+        device.add_selector({"className": "android.widget.EditText"})
+
+        message_entry = FakeUiSelector(exists=True)
+        message_entry.text_values = ["still a draft"]
+
+        fake_time = [0.0]
+
+        def fake_monotonic():
+            fake_time[0] += 1
+            return fake_time[0]
+
+        with patch(
+            "adb_automation.whatsapp.time.monotonic", side_effect=fake_monotonic
+        ), patch("adb_automation.whatsapp.time.sleep"), self.assertRaisesRegex(
+            whatsapp.AutomationError, "may still be a draft"
+        ):
+            whatsapp.click_send_button(
+                "192.168.10.21:5555",
+                WHATSAPP_MESSENGER_PACKAGE,
+                timeout=0,
+                device_connector=lambda serial: device,
+                message_entry=message_entry,
+            )
+
     def test_click_send_button_raises_when_element_is_missing(self):
         device = FakeUiDevice()
 
@@ -317,6 +350,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             "192.168.10.21:5555",
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=False,
+            message_entry=None,
         )
         run_adb.assert_not_called()
 
@@ -479,6 +513,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             "192.168.10.21:5555",
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=False,
+            message_entry=focus_message_entry.return_value,
         )
         adb_commands = [call.args[0] for call in run_adb.call_args_list]
         self.assertEqual(
@@ -590,6 +625,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             serial,
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=False,
+            message_entry=ANY,
         )
         self.assertEqual(replay_adb_text_buffer(adb_commands), "hello there")
         self.assertIn(
@@ -651,11 +687,13 @@ class WhatsappSendButtonTests(unittest.TestCase):
                     serial,
                     WHATSAPP_MESSENGER_PACKAGE,
                     fail_on_contact_picker=False,
+                    message_entry=ANY,
                 ),
                 call(
                     serial,
                     WHATSAPP_MESSENGER_PACKAGE,
                     fail_on_contact_picker=False,
+                    message_entry=ANY,
                 ),
             ],
         )
@@ -752,6 +790,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             "192.168.10.21:5555",
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=False,
+            message_entry=None,
         )
         adb_commands = [call.args[0] for call in run_adb.call_args_list]
         self.assertEqual(
@@ -830,6 +869,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             "192.168.10.21:5555",
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=False,
+            message_entry=None,
         )
         self.assertEqual(
             launched_view_urls(adb_commands),
@@ -881,6 +921,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             "192.168.10.21:5555",
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=False,
+            message_entry=None,
         )
         self.assertEqual(
             launched_view_urls(adb_commands),

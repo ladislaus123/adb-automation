@@ -228,6 +228,12 @@ def focus_message_entry(
             try:
                 selector = device(**selector_kwargs)
                 if selector_exists(selector):
+                    if selector_kwargs in GENERIC_MESSAGE_ENTRY_SELECTORS:
+                        print(
+                            "[WARN] message entry focused via generic fallback "
+                            f"selector {selector_kwargs}; this may not be the "
+                            "real compose field."
+                        )
                     selector.click()
                     time.sleep(0.4)
                     return selector
@@ -250,11 +256,35 @@ def focus_message_entry(
     )
 
 
-def message_entry_is_empty(device, whatsapp_package):
+GENERIC_MESSAGE_ENTRY_SELECTORS = (
+    {"className": "android.widget.EditText"},
+    {"classNameMatches": r".*EditText"},
+)
+
+
+def message_entry_is_empty(device, whatsapp_package, message_entry=None):
+    # Prefer re-reading the exact node we typed into. Falling back to a
+    # fresh selector search (below) can match the wrong EditText on some
+    # chat layouts, which would misreport "sent" while the real compose
+    # box still has the draft in it.
+    if message_entry is not None:
+        try:
+            text = read_compose_field_text(message_entry)
+        except Exception:
+            text = None
+        if text is not None:
+            return not text
+
     for selector_kwargs in message_entry_selectors(whatsapp_package):
         try:
             selector = device(**selector_kwargs)
             if selector_exists(selector):
+                if message_entry is None and selector_kwargs in GENERIC_MESSAGE_ENTRY_SELECTORS:
+                    print(
+                        "[WARN] message entry matched only a generic fallback "
+                        f"selector {selector_kwargs}; this may not be the real "
+                        "compose field, and send verification could be unreliable."
+                    )
                 return not selector.get_text()
         except Exception:
             continue
@@ -262,11 +292,11 @@ def message_entry_is_empty(device, whatsapp_package):
 
 
 def wait_for_message_entry_cleared(
-    device, whatsapp_package, timeout=SEND_CONFIRM_TIMEOUT_SECONDS
+    device, whatsapp_package, timeout=SEND_CONFIRM_TIMEOUT_SECONDS, message_entry=None
 ):
     deadline = time.monotonic() + timeout
     while True:
-        if message_entry_is_empty(device, whatsapp_package):
+        if message_entry_is_empty(device, whatsapp_package, message_entry=message_entry):
             return True
         if time.monotonic() >= deadline:
             return False
@@ -279,6 +309,7 @@ def click_send_button(
     timeout=SEND_BUTTON_TIMEOUT_SECONDS,
     device_connector=None,
     fail_on_contact_picker=False,
+    message_entry=None,
 ):
     if device_connector is None:
         device_connector = connect_uiautomator_device
@@ -308,13 +339,17 @@ def click_send_button(
                 selector = device(**selector_kwargs)
                 if selector_exists(selector):
                     selector.click()
-                    if wait_for_message_entry_cleared(device, whatsapp_package):
+                    if wait_for_message_entry_cleared(
+                        device, whatsapp_package, message_entry=message_entry
+                    ):
                         return
                     # Tap may not have registered (WhatsApp still showing the
                     # typed draft); retry once before giving up so callers never
                     # move on while a draft is still sitting unsent in the box.
                     selector.click()
-                    if wait_for_message_entry_cleared(device, whatsapp_package):
+                    if wait_for_message_entry_cleared(
+                        device, whatsapp_package, message_entry=message_entry
+                    ):
                         return
                     raise AutomationError(
                         "WhatsApp send button was tapped but the message entry "
@@ -345,12 +380,14 @@ def click_send_button_with_keyboard_fallback(
     serial,
     whatsapp_package,
     fail_on_contact_picker=False,
+    message_entry=None,
 ):
     try:
         click_send_button(
             serial,
             whatsapp_package,
             fail_on_contact_picker=fail_on_contact_picker,
+            message_entry=message_entry,
         )
         return
     except WhatsAppRestrictedError:
@@ -369,6 +406,7 @@ def click_send_button_with_keyboard_fallback(
         serial,
         whatsapp_package,
         fail_on_contact_picker=fail_on_contact_picker,
+        message_entry=message_entry,
     )
 
 
@@ -776,6 +814,7 @@ def send_whatsapp(
 
         from .chat_navigation import open_chat_via_ui
 
+        message_entry = None
         try:
             if not open_chat_via_ui(serial, phone, whatsapp_package, known_contact):
                 launch_whatsapp_text(serial, phone, whatsapp_package)
@@ -813,12 +852,17 @@ def send_whatsapp(
                     )
                     print("[*] Waiting for WhatsApp prefilled text UI to settle...")
                     time.sleep(3.5)
+                    # The intent relaunch above tears down and recreates the
+                    # compose field, so the reference we typed into is stale;
+                    # fall back to a fresh selector search for verification.
+                    message_entry = None
 
             print("[*] Finding WhatsApp send button with uiautomator2...")
             click_send_button_with_keyboard_fallback(
                 serial,
                 whatsapp_package,
                 fail_on_contact_picker=fail_on_contact_picker,
+                message_entry=message_entry,
             )
             print("[+] Transmission automated successfully!")
         finally:
