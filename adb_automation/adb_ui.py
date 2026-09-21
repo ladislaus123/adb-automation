@@ -2,10 +2,11 @@ import re
 import time
 import xml.etree.ElementTree as ET
 
-from .adb import connect_wifi_device, run_adb, wake_and_unlock_device
+from .adb import connect_wifi_device, restart_local_adb_server, run_adb, wake_and_unlock_device
 from .config import (
     APPIUM_RECONNECT_ON_WEDGE_ENV_VAR,
     APPIUM_REBOOT_ON_WEDGE_ENV_VAR,
+    APPIUM_RESTART_ADB_SERVER_ON_WEDGE_ENV_VAR,
     APPIUM_SETTLE_SECONDS_ENV_VAR,
     env_bool,
     env_int,
@@ -49,7 +50,12 @@ def uninstall_uiautomation_test_packages(serial, run_adb_command=run_adb):
             pass
 
 
-def reconnect_adb_transport(serial, run_adb_command=run_adb, adb_transport="wifi"):
+def reconnect_adb_transport(
+    serial,
+    run_adb_command=run_adb,
+    sleep=time.sleep,
+    adb_transport="wifi",
+):
     """Re-establish the adb transport without touching the cable.
 
     `adb reconnect` asks adbd to drop and reopen its connection to the host
@@ -57,17 +63,25 @@ def reconnect_adb_transport(serial, run_adb_command=run_adb, adb_transport="wifi
     software equivalent of unplugging and replugging the cable. Wi-Fi devices
     additionally get a plain `adb connect host:port`, since their transport
     can also drop at the TCP layer, which a bare `reconnect` doesn't re-dial.
+
+    A USB device needs a settle pause after the `reconnect` before adbd has
+    actually re-enumerated it -- without it, a wedged host-side USB endpoint
+    can still look connected right up until the next command hangs.
     """
     try:
         run_adb_command(["reconnect"], serial=serial)
     except AutomationError as exc:
         print(f"[WARN] adb reconnect failed: {exc}")
 
+    sleep(uiautomation_settle_seconds())
+
     if is_wifi_adb_transport(adb_transport):
         try:
             connect_wifi_device(serial)
         except AutomationError as exc:
             print(f"[WARN] Could not re-establish Wi-Fi ADB connection: {exc}")
+
+    sleep(uiautomation_settle_seconds())
 
 
 def reboot_device_and_wait(
@@ -138,9 +152,28 @@ def build_uiautomation_recovery_ladder():
         reconnect_adb_transport(
             serial,
             run_adb_command=run_adb_command,
+            sleep=sleep,
             adb_transport=adb_transport,
         )
+
+    def level_restart_adb_server(serial, run_adb_command, sleep, adb_transport):
+        # Level 3 (reconnect) issues its `adb reconnect`/`connect` through the
+        # SAME local adb server daemon that a previously wedged `uiautomator
+        # dump` may still have a USB transport locked on -- if that daemon
+        # itself is stuck, every command routed through it for this serial
+        # queues behind the same lock and reconnect can't help. Killing and
+        # respawning the daemon (not the device, and not this process) drops
+        # that lock, which is the host-side equivalent of what restarting the
+        # whole server process was doing to unwedge it.
+        print(f"[*] Restarting local adb server daemon to clear a wedged transport lock...")
+        restart_local_adb_server()
         sleep(uiautomation_settle_seconds())
+        reconnect_adb_transport(
+            serial,
+            run_adb_command=run_adb_command,
+            sleep=sleep,
+            adb_transport=adb_transport,
+        )
 
     def level_reboot(serial, run_adb_command, sleep, adb_transport):
         reboot_device_and_wait(
@@ -153,6 +186,8 @@ def build_uiautomation_recovery_ladder():
     ladder = [level_kill, level_uninstall]
     if env_bool(APPIUM_RECONNECT_ON_WEDGE_ENV_VAR, True):
         ladder.append(level_reconnect)
+    if env_bool(APPIUM_RESTART_ADB_SERVER_ON_WEDGE_ENV_VAR, True):
+        ladder.append(level_restart_adb_server)
     if env_bool(APPIUM_REBOOT_ON_WEDGE_ENV_VAR, False):
         ladder.append(level_reboot)
     return ladder
