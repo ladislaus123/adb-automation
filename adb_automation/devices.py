@@ -259,11 +259,12 @@ def find_device(conn, selector, for_update=False):
     selector = str(selector).strip()
     if not selector:
         raise ValueError("device selector is required.")
+    row = find_device_by_name(conn, selector, for_update=for_update)
+    if row:
+        return row
     if selector.isdigit():
-        row = get_device_by_id(conn, int(selector), for_update=for_update)
-        if row:
-            return row
-    return find_device_by_name(conn, selector, for_update=for_update)
+        return get_device_by_id(conn, int(selector), for_update=for_update)
+    return None
 
 
 def find_device_by_endpoint(conn, ip, port):
