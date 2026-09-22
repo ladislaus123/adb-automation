@@ -61,6 +61,13 @@ def guessed_mime_type(file_path):
     return mime_type
 
 
+PDF_MIME_TYPE = "application/pdf"
+
+
+def is_pdf_file(file_path):
+    return os.path.splitext(str(file_path or ""))[1].lower() == ".pdf"
+
+
 def should_use_gallery_media_flow(mime_type):
     return bool(
         mime_type
@@ -764,6 +771,11 @@ def send_whatsapp(
 
         if file_path:
             mime_type = guessed_mime_type(file_path)
+            if is_pdf_file(file_path):
+                # Guarantee PDFs are always labeled correctly for the direct
+                # media intent below, regardless of whether mimetypes.guess_type
+                # resolved it (e.g. an odd/stripped filename upstream).
+                mime_type = PDF_MIME_TYPE
             if should_use_gallery_media_flow(mime_type):
                 from .media_picker import send_media_via_gallery_picker
 
