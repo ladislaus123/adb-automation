@@ -23,6 +23,7 @@ NUMBER_VALIDATION_SETTLE_SECONDS = 2
 SEARCH_SETTLE_SECONDS = 1.5
 SEARCH_SUFFIX_DIGITS = 8
 RESULT_ROW_MAX_INSTANCES = 6
+ELEMENT_CLICK_TIMEOUT_SECONDS = 2
 
 NEW_CHAT_FAB_TEXTS = (
     "Nova conversa",
@@ -321,7 +322,7 @@ def selector_bounds(selector):
 
 def tap_element(selector, serial, run_adb_command=run_adb):
     try:
-        selector.click()
+        selector.click(timeout=ELEMENT_CLICK_TIMEOUT_SECONDS)
         return True
     except Exception as exc:
         print(f"[WARN] Direct click failed ({exc}); trying coordinate tap.")
@@ -359,7 +360,7 @@ def click_first_existing(device, selectors, timeout, interval=POLL_INTERVAL_SECO
             try:
                 selector = device(**selector_kwargs)
                 if selector_exists(selector):
-                    selector.click()
+                    selector.click(timeout=ELEMENT_CLICK_TIMEOUT_SECONDS)
                     return True
             except Exception:
                 continue
