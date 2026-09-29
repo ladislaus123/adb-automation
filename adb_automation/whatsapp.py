@@ -269,24 +269,15 @@ GENERIC_MESSAGE_ENTRY_SELECTORS = (
 )
 
 
-def message_entry_is_empty(device, whatsapp_package, message_entry=None):
-    # Prefer re-reading the exact node we typed into. Falling back to a
-    # fresh selector search (below) can match the wrong EditText on some
-    # chat layouts, which would misreport "sent" while the real compose
-    # box still has the draft in it.
-    if message_entry is not None:
-        try:
-            text = read_compose_field_text(message_entry)
-        except Exception:
-            text = None
-        if text is not None:
-            return not text
-
+def _message_entry_is_empty_fresh(device, whatsapp_package, allow_generic_fallback=True):
     for selector_kwargs in message_entry_selectors(whatsapp_package):
+        is_generic = selector_kwargs in GENERIC_MESSAGE_ENTRY_SELECTORS
+        if is_generic and not allow_generic_fallback:
+            continue
         try:
             selector = device(**selector_kwargs)
             if selector_exists(selector):
-                if message_entry is None and selector_kwargs in GENERIC_MESSAGE_ENTRY_SELECTORS:
+                if is_generic:
                     print(
                         "[WARN] message entry matched only a generic fallback "
                         f"selector {selector_kwargs}; this may not be the real "
@@ -296,6 +287,34 @@ def message_entry_is_empty(device, whatsapp_package, message_entry=None):
         except Exception:
             continue
     return False
+
+
+def message_entry_is_empty(device, whatsapp_package, message_entry=None):
+    # Prefer re-reading the exact node we typed into: a fresh selector search
+    # can match the wrong EditText on some chat layouts, which would
+    # misreport "sent" while the real compose box still has the draft in it.
+    # But a stale node reference can just as easily do the reverse -- keep
+    # reporting non-empty (cached/stale text) after WhatsApp has already
+    # cleared the real, live compose field once the message actually sent.
+    # So a "not empty" verdict from the stale node is only overturned by a
+    # fresh lookup that matches the *real* compose field (a real resourceId,
+    # not a generic EditText fallback that could easily be some other,
+    # already-empty widget) -- anything less certain keeps trusting the
+    # stale node's non-empty read. A thrown exception or a genuinely empty
+    # stale read is trusted immediately (no ambiguity to resolve).
+    if message_entry is not None:
+        try:
+            text = read_compose_field_text(message_entry)
+        except Exception:
+            text = None
+        if text is not None:
+            if not text:
+                return True
+            return _message_entry_is_empty_fresh(
+                device, whatsapp_package, allow_generic_fallback=False
+            )
+
+    return _message_entry_is_empty_fresh(device, whatsapp_package)
 
 
 def wait_for_message_entry_cleared(
@@ -373,6 +392,20 @@ def click_send_button(
         time.sleep(0.25)
 
     raise_if_whatsapp_restricted(device)
+
+    # No send button selector ever matched -- on a busy device this is
+    # frequently because an earlier click already sent the message (the
+    # button icon toggles to a mic once the compose field is empty), not
+    # because the send never happened. Confirm against a live compose-field
+    # read before declaring failure so a genuinely delivered message doesn't
+    # get recorded as failed.
+    if message_entry_is_empty(device, whatsapp_package, message_entry=message_entry):
+        print(
+            "[WARN] Could not locate the WhatsApp send button, but the compose "
+            "field is already empty; treating the message as sent."
+        )
+        return
+
     details = (
         f" Last uiautomator2 error: {last_error}"
         if last_error is not None
