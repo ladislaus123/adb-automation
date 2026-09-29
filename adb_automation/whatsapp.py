@@ -61,6 +61,13 @@ def guessed_mime_type(file_path):
     return mime_type
 
 
+PDF_MIME_TYPE = "application/pdf"
+
+
+def is_pdf_file(file_path):
+    return os.path.splitext(str(file_path or ""))[1].lower() == ".pdf"
+
+
 def should_use_gallery_media_flow(mime_type):
     return bool(
         mime_type
@@ -262,24 +269,15 @@ GENERIC_MESSAGE_ENTRY_SELECTORS = (
 )
 
 
-def message_entry_is_empty(device, whatsapp_package, message_entry=None):
-    # Prefer re-reading the exact node we typed into. Falling back to a
-    # fresh selector search (below) can match the wrong EditText on some
-    # chat layouts, which would misreport "sent" while the real compose
-    # box still has the draft in it.
-    if message_entry is not None:
-        try:
-            text = read_compose_field_text(message_entry)
-        except Exception:
-            text = None
-        if text is not None:
-            return not text
-
+def _message_entry_is_empty_fresh(device, whatsapp_package, allow_generic_fallback=True):
     for selector_kwargs in message_entry_selectors(whatsapp_package):
+        is_generic = selector_kwargs in GENERIC_MESSAGE_ENTRY_SELECTORS
+        if is_generic and not allow_generic_fallback:
+            continue
         try:
             selector = device(**selector_kwargs)
             if selector_exists(selector):
-                if message_entry is None and selector_kwargs in GENERIC_MESSAGE_ENTRY_SELECTORS:
+                if is_generic:
                     print(
                         "[WARN] message entry matched only a generic fallback "
                         f"selector {selector_kwargs}; this may not be the real "
@@ -289,6 +287,34 @@ def message_entry_is_empty(device, whatsapp_package, message_entry=None):
         except Exception:
             continue
     return False
+
+
+def message_entry_is_empty(device, whatsapp_package, message_entry=None):
+    # Prefer re-reading the exact node we typed into: a fresh selector search
+    # can match the wrong EditText on some chat layouts, which would
+    # misreport "sent" while the real compose box still has the draft in it.
+    # But a stale node reference can just as easily do the reverse -- keep
+    # reporting non-empty (cached/stale text) after WhatsApp has already
+    # cleared the real, live compose field once the message actually sent.
+    # So a "not empty" verdict from the stale node is only overturned by a
+    # fresh lookup that matches the *real* compose field (a real resourceId,
+    # not a generic EditText fallback that could easily be some other,
+    # already-empty widget) -- anything less certain keeps trusting the
+    # stale node's non-empty read. A thrown exception or a genuinely empty
+    # stale read is trusted immediately (no ambiguity to resolve).
+    if message_entry is not None:
+        try:
+            text = read_compose_field_text(message_entry)
+        except Exception:
+            text = None
+        if text is not None:
+            if not text:
+                return True
+            return _message_entry_is_empty_fresh(
+                device, whatsapp_package, allow_generic_fallback=False
+            )
+
+    return _message_entry_is_empty_fresh(device, whatsapp_package)
 
 
 def wait_for_message_entry_cleared(
@@ -366,6 +392,20 @@ def click_send_button(
         time.sleep(0.25)
 
     raise_if_whatsapp_restricted(device)
+
+    # No send button selector ever matched -- on a busy device this is
+    # frequently because an earlier click already sent the message (the
+    # button icon toggles to a mic once the compose field is empty), not
+    # because the send never happened. Confirm against a live compose-field
+    # read before declaring failure so a genuinely delivered message doesn't
+    # get recorded as failed.
+    if message_entry_is_empty(device, whatsapp_package, message_entry=message_entry):
+        print(
+            "[WARN] Could not locate the WhatsApp send button, but the compose "
+            "field is already empty; treating the message as sent."
+        )
+        return
+
     details = (
         f" Last uiautomator2 error: {last_error}"
         if last_error is not None
@@ -668,19 +708,22 @@ def read_compose_field_text(message_entry):
         except Exception:
             pass
 
-    info = getattr(message_entry, "info", None)
-    if callable(info):
-        try:
-            info_dict = info()
-            if isinstance(info_dict, dict):
-                return (
-                    info_dict.get("text")
-                    or info_dict.get("contentDescription")
-                    or info_dict.get("content-desc")
-                    or ""
-                )
-        except Exception:
-            pass
+    # .info is a *property* on uiautomator2 UiObject (it fires a live
+    # objInfo RPC on access), not a method -- so both the property access
+    # itself and any RPC failure inside it must be guarded here, or a
+    # transient device/RPC error escapes this function entirely.
+    try:
+        info_dict = message_entry.info
+    except Exception:
+        info_dict = None
+
+    if isinstance(info_dict, dict):
+        return (
+            info_dict.get("text")
+            or info_dict.get("contentDescription")
+            or info_dict.get("content-desc")
+            or ""
+        )
 
     return None
 
@@ -764,6 +807,11 @@ def send_whatsapp(
 
         if file_path:
             mime_type = guessed_mime_type(file_path)
+            if is_pdf_file(file_path):
+                # Guarantee PDFs are always labeled correctly for the direct
+                # media intent below, regardless of whether mimetypes.guess_type
+                # resolved it (e.g. an odd/stripped filename upstream).
+                mime_type = PDF_MIME_TYPE
             if should_use_gallery_media_flow(mime_type):
                 from .media_picker import send_media_via_gallery_picker
 
@@ -841,7 +889,12 @@ def send_whatsapp(
                     verify_message_typed(message_entry, text)
                 except WhatsAppRestrictedError:
                     raise
-                except AutomationError as exc:
+                except Exception as exc:
+                    # Catch broadly, not just AutomationError: a transient
+                    # uiautomator2/RPC failure during typing or verification
+                    # must still fall back to the prefilled-text intent
+                    # instead of crashing the job with a draft already typed
+                    # and the send button never reached.
                     print(f"[WARN] Human-like typing failed; falling back: {exc}")
                     clear_message_draft(serial, text)
                     launch_whatsapp_prefilled_text(
