@@ -708,19 +708,22 @@ def read_compose_field_text(message_entry):
         except Exception:
             pass
 
-    info = getattr(message_entry, "info", None)
-    if callable(info):
-        try:
-            info_dict = info()
-            if isinstance(info_dict, dict):
-                return (
-                    info_dict.get("text")
-                    or info_dict.get("contentDescription")
-                    or info_dict.get("content-desc")
-                    or ""
-                )
-        except Exception:
-            pass
+    # .info is a *property* on uiautomator2 UiObject (it fires a live
+    # objInfo RPC on access), not a method -- so both the property access
+    # itself and any RPC failure inside it must be guarded here, or a
+    # transient device/RPC error escapes this function entirely.
+    try:
+        info_dict = message_entry.info
+    except Exception:
+        info_dict = None
+
+    if isinstance(info_dict, dict):
+        return (
+            info_dict.get("text")
+            or info_dict.get("contentDescription")
+            or info_dict.get("content-desc")
+            or ""
+        )
 
     return None
 
@@ -886,7 +889,12 @@ def send_whatsapp(
                     verify_message_typed(message_entry, text)
                 except WhatsAppRestrictedError:
                     raise
-                except AutomationError as exc:
+                except Exception as exc:
+                    # Catch broadly, not just AutomationError: a transient
+                    # uiautomator2/RPC failure during typing or verification
+                    # must still fall back to the prefilled-text intent
+                    # instead of crashing the job with a draft already typed
+                    # and the send button never reached.
                     print(f"[WARN] Human-like typing failed; falling back: {exc}")
                     clear_message_draft(serial, text)
                     launch_whatsapp_prefilled_text(
