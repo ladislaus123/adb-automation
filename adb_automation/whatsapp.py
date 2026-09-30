@@ -2,6 +2,7 @@ import mimetypes
 import os
 import time
 import urllib.parse
+from xml.etree import ElementTree
 
 from .adb import ensure_portrait_orientation, portrait_orientation_guard, run_adb
 from .appium_media import stop_u2_uiautomator
@@ -47,6 +48,19 @@ KEYBOARD_DISMISS_SETTLE_SECONDS = 0.8
 MESSAGE_VERIFY_SETTLE_SECONDS = 0.3
 SEND_CONFIRM_TIMEOUT_SECONDS = 5
 SEND_CONFIRM_POLL_SECONDS = 0.2
+# Authoritative "message committed" signal: the outgoing bubble's status icon
+# (clock -> single check -> double check -> read). Read from the live view tree.
+STATUS_CONFIRM_TIMEOUT_SECONDS = 8
+STATUS_CONFIRM_POLL_SECONDS = 0.4
+# Small settle before reading the tree so a screen change left over from a
+# previous job (device/worker switching chats) can't be mistaken for this send.
+STATUS_CONFIRM_SETTLE_SECONDS = 1.2
+# Resource id suffix of the per-row outgoing status icon.
+MESSAGE_STATUS_RESOURCE_NAME = "status"
+MESSAGE_TEXT_RESOURCE_NAME = "message_text"
+# Shortest message length for which a substring (rather than exact) bubble-text
+# match is trusted, to tolerate trailing-newline/whitespace normalization.
+STATUS_MATCH_MIN_SUBSTRING_LEN = 20
 
 
 def normalize_phone(phone):
@@ -329,6 +343,127 @@ def wait_for_message_entry_cleared(
         time.sleep(SEND_CONFIRM_POLL_SECONDS)
 
 
+def _normalize_bubble_text(value):
+    return " ".join(str(value or "").split())
+
+
+def _bubble_text_matches(bubble_text, target_normalized):
+    bubble_normalized = _normalize_bubble_text(bubble_text)
+    if not bubble_normalized or not target_normalized:
+        return False
+    if bubble_normalized == target_normalized:
+        return True
+    # Tolerate WhatsApp normalizing/trimming the rendered bubble (e.g. a
+    # trailing newline) for long messages, without letting a tiny prefix match.
+    if (
+        len(target_normalized) >= STATUS_MATCH_MIN_SUBSTRING_LEN
+        and target_normalized in bubble_normalized
+    ):
+        return True
+    if (
+        len(bubble_normalized) >= STATUS_MATCH_MIN_SUBSTRING_LEN
+        and bubble_normalized in target_normalized
+    ):
+        return True
+    return False
+
+
+def _outgoing_status_present(xml_text, whatsapp_package, target_normalized):
+    """True if the view tree contains an outgoing bubble whose text matches the
+    sent message and whose row carries a status icon (clock/check/double-check).
+
+    Keying on the presence of ``<pkg>:id/status`` — which only appears on
+    outgoing, committed rows — makes this locale-independent: a draft, a failed
+    send (shows a retry icon, not a status icon) and inbound messages are all
+    excluded without matching any translated ``content-desc`` string.
+    """
+    try:
+        root = ElementTree.fromstring(xml_text)
+    except Exception:
+        return False
+
+    status_id = f"{whatsapp_package}:id/{MESSAGE_STATUS_RESOURCE_NAME}"
+    text_id = f"{whatsapp_package}:id/{MESSAGE_TEXT_RESOURCE_NAME}"
+    parent_map = {child: parent for parent in root.iter() for child in parent}
+
+    for node in root.iter("node"):
+        if node.get("resource-id") != text_id:
+            continue
+        if not _bubble_text_matches(node.get("text"), target_normalized):
+            continue
+        # Climb to the enclosing conversation row and look for its status icon.
+        # Bounded depth so we stop at the row, not the whole message list.
+        ancestor = node
+        for _ in range(4):
+            parent = parent_map.get(ancestor)
+            if parent is None:
+                break
+            ancestor = parent
+            if any(
+                descendant.get("resource-id") == status_id
+                for descendant in ancestor.iter("node")
+            ):
+                return True
+    return False
+
+
+def confirm_message_sent_via_status(
+    device,
+    whatsapp_package,
+    text,
+    timeout=STATUS_CONFIRM_TIMEOUT_SECONDS,
+    settle=STATUS_CONFIRM_SETTLE_SECONDS,
+):
+    """Confirm a text message committed by reading the outgoing bubble's status
+    icon from the live view tree. Returns True as soon as a matching outgoing
+    row shows any committed state, else False after ``timeout``.
+
+    Never raises: any tree-read/parse error yields False so the caller falls
+    back to the compose-field check.
+    """
+    if not text:
+        return False
+
+    dump_hierarchy = getattr(device, "dump_hierarchy", None)
+    if not callable(dump_hierarchy):
+        # No live-tree access (e.g. a stubbed device in tests) -- let the caller
+        # use its fallback confirmation instead.
+        return False
+
+    # Let the screen settle first so a chat left open by a previous job can't be
+    # read as this message's status.
+    time.sleep(settle)
+
+    target_normalized = _normalize_bubble_text(text)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            xml_text = dump_hierarchy()
+        except Exception:
+            xml_text = None
+
+        if xml_text and _outgoing_status_present(
+            xml_text, whatsapp_package, target_normalized
+        ):
+            return True
+
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(STATUS_CONFIRM_POLL_SECONDS)
+
+
+def _confirm_text_send(device, whatsapp_package, confirm_text, message_entry):
+    """Primary text-send confirmation: the outgoing bubble's status icon, with
+    the compose-field-cleared heuristic kept as a fallback."""
+    if confirm_text and confirm_message_sent_via_status(
+        device, whatsapp_package, confirm_text
+    ):
+        return True
+    return wait_for_message_entry_cleared(
+        device, whatsapp_package, message_entry=message_entry
+    )
+
+
 def click_send_button(
     serial,
     whatsapp_package,
@@ -336,6 +471,7 @@ def click_send_button(
     device_connector=None,
     fail_on_contact_picker=False,
     message_entry=None,
+    confirm_text=None,
 ):
     if device_connector is None:
         device_connector = connect_uiautomator_device
@@ -365,16 +501,16 @@ def click_send_button(
                 selector = device(**selector_kwargs)
                 if selector_exists(selector):
                     selector.click()
-                    if wait_for_message_entry_cleared(
-                        device, whatsapp_package, message_entry=message_entry
+                    if _confirm_text_send(
+                        device, whatsapp_package, confirm_text, message_entry
                     ):
                         return
                     # Tap may not have registered (WhatsApp still showing the
                     # typed draft); retry once before giving up so callers never
                     # move on while a draft is still sitting unsent in the box.
                     selector.click()
-                    if wait_for_message_entry_cleared(
-                        device, whatsapp_package, message_entry=message_entry
+                    if _confirm_text_send(
+                        device, whatsapp_package, confirm_text, message_entry
                     ):
                         return
                     raise AutomationError(
@@ -396,9 +532,19 @@ def click_send_button(
     # No send button selector ever matched -- on a busy device this is
     # frequently because an earlier click already sent the message (the
     # button icon toggles to a mic once the compose field is empty), not
-    # because the send never happened. Confirm against a live compose-field
-    # read before declaring failure so a genuinely delivered message doesn't
-    # get recorded as failed.
+    # because the send never happened. Prefer the authoritative status-icon
+    # read: if the outgoing bubble shows a clock/check, the message committed.
+    if confirm_text and confirm_message_sent_via_status(
+        device, whatsapp_package, confirm_text
+    ):
+        print(
+            "[INFO] Could not locate the WhatsApp send button, but the outgoing "
+            "message row shows a sent/delivered status; treating as sent."
+        )
+        return
+
+    # Fallback: a live compose-field read, so a genuinely delivered message
+    # doesn't get recorded as failed even when the status tree was unreadable.
     if message_entry_is_empty(device, whatsapp_package, message_entry=message_entry):
         print(
             "[WARN] Could not locate the WhatsApp send button, but the compose "
@@ -421,6 +567,7 @@ def click_send_button_with_keyboard_fallback(
     whatsapp_package,
     fail_on_contact_picker=False,
     message_entry=None,
+    confirm_text=None,
 ):
     try:
         click_send_button(
@@ -428,6 +575,7 @@ def click_send_button_with_keyboard_fallback(
             whatsapp_package,
             fail_on_contact_picker=fail_on_contact_picker,
             message_entry=message_entry,
+            confirm_text=confirm_text,
         )
         return
     except WhatsAppRestrictedError:
@@ -447,6 +595,7 @@ def click_send_button_with_keyboard_fallback(
         whatsapp_package,
         fail_on_contact_picker=fail_on_contact_picker,
         message_entry=message_entry,
+        confirm_text=confirm_text,
     )
 
 
@@ -916,6 +1065,7 @@ def send_whatsapp(
                 whatsapp_package,
                 fail_on_contact_picker=fail_on_contact_picker,
                 message_entry=message_entry,
+                confirm_text=text,
             )
             print("[+] Transmission automated successfully!")
         finally:

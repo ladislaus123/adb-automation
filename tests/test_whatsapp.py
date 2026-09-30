@@ -351,6 +351,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=False,
             message_entry=None,
+            confirm_text=None,
         )
         run_adb.assert_not_called()
 
@@ -514,6 +515,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=False,
             message_entry=focus_message_entry.return_value,
+            confirm_text=ANY,
         )
         adb_commands = [call.args[0] for call in run_adb.call_args_list]
         self.assertEqual(
@@ -626,6 +628,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=False,
             message_entry=ANY,
+            confirm_text=ANY,
         )
         self.assertEqual(replay_adb_text_buffer(adb_commands), "hello there")
         self.assertIn(
@@ -688,12 +691,14 @@ class WhatsappSendButtonTests(unittest.TestCase):
                     WHATSAPP_MESSENGER_PACKAGE,
                     fail_on_contact_picker=False,
                     message_entry=ANY,
+                    confirm_text=ANY,
                 ),
                 call(
                     serial,
                     WHATSAPP_MESSENGER_PACKAGE,
                     fail_on_contact_picker=False,
                     message_entry=ANY,
+                    confirm_text=ANY,
                 ),
             ],
         )
@@ -791,6 +796,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=False,
             message_entry=None,
+            confirm_text=ANY,
         )
         adb_commands = [call.args[0] for call in run_adb.call_args_list]
         self.assertEqual(
@@ -870,6 +876,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=False,
             message_entry=None,
+            confirm_text=ANY,
         )
         self.assertEqual(
             launched_view_urls(adb_commands),
@@ -922,6 +929,7 @@ class WhatsappSendButtonTests(unittest.TestCase):
             WHATSAPP_MESSENGER_PACKAGE,
             fail_on_contact_picker=False,
             message_entry=None,
+            confirm_text=ANY,
         )
         self.assertEqual(
             launched_view_urls(adb_commands),
@@ -1246,6 +1254,166 @@ class VerifyMessageTypedTests(unittest.TestCase):
                 for call in fake_print.call_args_list
             )
         )
+
+
+def _row_xml(pkg, text, with_status=True, status_desc="Entregue"):
+    status_node = (
+        f'<node resource-id="{pkg}:id/status" class="android.widget.ImageView" '
+        f'text="" content-desc="{status_desc}" />'
+        if with_status
+        else ""
+    )
+    return (
+        "<hierarchy>"
+        f'<node resource-id="{pkg}:id/conversation_layout">'
+        f'<node resource-id="{pkg}:id/conversation_row">'
+        f'<node resource-id="{pkg}:id/message_text" '
+        f'class="android.widget.TextView" text="{text}" />'
+        f"{status_node}"
+        "</node>"
+        "</node>"
+        "</hierarchy>"
+    )
+
+
+class FakeStatusDevice:
+    """Minimal device exposing dump_hierarchy for status confirmation."""
+
+    def __init__(self, xml):
+        self._xml = xml
+        self.dumps = 0
+
+    def dump_hierarchy(self):
+        self.dumps += 1
+        return self._xml
+
+
+class OutgoingStatusPresentTests(unittest.TestCase):
+    pkg = WHATSAPP_MESSENGER_PACKAGE
+
+    def test_true_when_matching_bubble_has_status_icon(self):
+        xml = _row_xml(self.pkg, "hello there", with_status=True)
+        self.assertTrue(
+            whatsapp._outgoing_status_present(xml, self.pkg, "hello there")
+        )
+
+    def test_false_when_bubble_matches_but_has_no_status_icon(self):
+        # A failed/draft row shows a retry icon, not id/status -> not committed.
+        xml = _row_xml(self.pkg, "hello there", with_status=False)
+        self.assertFalse(
+            whatsapp._outgoing_status_present(xml, self.pkg, "hello there")
+        )
+
+    def test_false_when_no_bubble_text_matches(self):
+        xml = _row_xml(self.pkg, "a different message", with_status=True)
+        self.assertFalse(
+            whatsapp._outgoing_status_present(xml, self.pkg, "hello there")
+        )
+
+    def test_matches_when_target_already_normalized(self):
+        # _outgoing_status_present receives an already-normalized target; the
+        # bubble side is normalized internally.
+        xml = _row_xml(self.pkg, "line one   line two", with_status=True)
+        self.assertTrue(
+            whatsapp._outgoing_status_present(xml, self.pkg, "line one line two")
+        )
+
+    def test_long_message_substring_match_is_trusted(self):
+        sent = "Tá chegando, minha gente! Domingo é dia de escolher o Brasil"
+        rendered = sent + " "  # trailing whitespace the bubble may add/strip
+        xml = _row_xml(self.pkg, rendered, with_status=True)
+        self.assertTrue(
+            whatsapp._outgoing_status_present(xml, self.pkg, sent)
+        )
+
+
+class ConfirmMessageSentViaStatusTests(unittest.TestCase):
+    pkg = WHATSAPP_MESSENGER_PACKAGE
+
+    def test_confirms_when_status_icon_present(self):
+        device = FakeStatusDevice(_row_xml(self.pkg, "hello there", True))
+        with patch("adb_automation.whatsapp.time.sleep"):
+            self.assertTrue(
+                whatsapp.confirm_message_sent_via_status(
+                    device, self.pkg, "hello there", timeout=1
+                )
+            )
+
+    def test_returns_false_without_dump_hierarchy(self):
+        # A stubbed device (no live tree) must defer to the caller's fallback,
+        # and must not sleep/settle.
+        class NoDump:
+            pass
+
+        with patch("adb_automation.whatsapp.time.sleep") as sleep:
+            self.assertFalse(
+                whatsapp.confirm_message_sent_via_status(
+                    NoDump(), self.pkg, "hello there"
+                )
+            )
+        sleep.assert_not_called()
+
+    def test_returns_false_when_status_never_appears(self):
+        device = FakeStatusDevice(_row_xml(self.pkg, "hello there", False))
+        with patch("adb_automation.whatsapp.time.sleep"):
+            self.assertFalse(
+                whatsapp.confirm_message_sent_via_status(
+                    device, self.pkg, "hello there", timeout=0
+                )
+            )
+
+    def test_confirms_multiline_message_after_newline_normalization(self):
+        # The bubble renders the multi-paragraph message on one line; the entry
+        # point normalizes the sent text before matching.
+        device = FakeStatusDevice(
+            _row_xml(self.pkg, "line one line two", with_status=True)
+        )
+        with patch("adb_automation.whatsapp.time.sleep"):
+            self.assertTrue(
+                whatsapp.confirm_message_sent_via_status(
+                    device, self.pkg, "line one\n\nline two", timeout=1
+                )
+            )
+
+    def test_settles_before_reading_tree(self):
+        device = FakeStatusDevice(_row_xml(self.pkg, "hello there", True))
+        with patch("adb_automation.whatsapp.time.sleep") as sleep:
+            whatsapp.confirm_message_sent_via_status(
+                device, self.pkg, "hello there", timeout=1, settle=1.2
+            )
+        # The settle delay guards against a previous job's screen being read.
+        self.assertIn(1.2, [c.args[0] for c in sleep.call_args_list if c.args])
+
+
+class ConfirmTextSendTests(unittest.TestCase):
+    pkg = WHATSAPP_MESSENGER_PACKAGE
+
+    def test_status_confirmation_short_circuits_compose_check(self):
+        # The status tick confirms the send even when the compose-field read
+        # would wrongly report "not empty" (the placeholder-hint false negative).
+        device = FakeStatusDevice(_row_xml(self.pkg, "hello there", True))
+        with patch("adb_automation.whatsapp.time.sleep"), patch(
+            "adb_automation.whatsapp.wait_for_message_entry_cleared"
+        ) as fallback:
+            result = whatsapp._confirm_text_send(
+                device, self.pkg, "hello there", message_entry=None
+            )
+        self.assertTrue(result)
+        fallback.assert_not_called()
+
+    def test_falls_back_to_compose_check_when_status_unavailable(self):
+        class NoDump:
+            pass
+
+        with patch("adb_automation.whatsapp.time.sleep"), patch(
+            "adb_automation.whatsapp.wait_for_message_entry_cleared",
+            return_value=True,
+        ) as fallback:
+            result = whatsapp._confirm_text_send(
+                NoDump(), self.pkg, "hello there", message_entry=None
+            )
+        self.assertTrue(result)
+        fallback.assert_called_once()
 
 
 if __name__ == "__main__":
