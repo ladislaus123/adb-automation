@@ -14,5 +14,10 @@ class WhatsAppRestrictedError(AutomationError):
     """Raised when WhatsApp reports the account cannot currently send."""
 
 
+class WhatsAppLoggedOutError(AutomationError):
+    """Raised when WhatsApp shows the login/registration screen, i.e. the
+    session is gone (the account is logged out on the device)."""
+
+
 class WhatsAppNotInstalledError(AutomationError):
     """Raised when the requested WhatsApp package is not installed."""

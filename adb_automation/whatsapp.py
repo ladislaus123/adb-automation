@@ -9,6 +9,7 @@ from .appium_media import stop_u2_uiautomator
 from .config import STREAM_EXTRA, WHATSAPP_BUSINESS_PACKAGE, WHATSAPP_PACKAGES
 from .errors import (
     AutomationError,
+    WhatsAppLoggedOutError,
     WhatsAppNotInstalledError,
     WhatsAppRestrictedError,
 )
@@ -35,6 +36,18 @@ WHATSAPP_RESTRICTED_TEXTS = (
     "conta foi restringida",
     "Unable to use WhatsApp",
     "unable to use whatsapp",
+)
+# Text shown on the login/registration screen when the account is logged out
+# (the WhatsApp session is gone). Kept distinct from "restricted" so the two map
+# to different downstream states (restricted -> RESTRINGIDO, logged out -> CAIU).
+WHATSAPP_LOGGED_OUT_TEXTS = (
+    "Verify your phone number",
+    "Agree and continue",
+    "Confirme seu número",
+    "Concordar e continuar",
+    "Toque para entrar novamente",
+    "Insira seu número de telefone",
+    "Enter your phone number",
 )
 HUMAN_TYPE_BURST_SIZES = (3, 4, 2, 5, 3, 6)
 HUMAN_TYPE_PAUSE_SECONDS = 0.35
@@ -228,6 +241,30 @@ def raise_if_whatsapp_restricted(device):
         raise WhatsAppRestrictedError("WhatsApp is restricted.")
 
 
+def whatsapp_logged_out_selectors():
+    return (
+        *({"text": text} for text in WHATSAPP_LOGGED_OUT_TEXTS),
+        *({"textContains": text} for text in WHATSAPP_LOGGED_OUT_TEXTS),
+        *({"description": text} for text in WHATSAPP_LOGGED_OUT_TEXTS),
+        *({"descriptionContains": text} for text in WHATSAPP_LOGGED_OUT_TEXTS),
+    )
+
+
+def is_whatsapp_logged_out_visible(device):
+    for selector_kwargs in whatsapp_logged_out_selectors():
+        try:
+            if selector_exists(device(**selector_kwargs)):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def raise_if_whatsapp_logged_out(device):
+    if is_whatsapp_logged_out_visible(device):
+        raise WhatsAppLoggedOutError("WhatsApp session is logged out.")
+
+
 def focus_message_entry(
     serial,
     whatsapp_package,
@@ -244,6 +281,7 @@ def focus_message_entry(
 
     while True:
         raise_if_whatsapp_restricted(device)
+        raise_if_whatsapp_logged_out(device)
 
         for selector_kwargs in message_entry_selectors(whatsapp_package):
             try:
@@ -483,6 +521,7 @@ def click_send_button(
 
     while True:
         raise_if_whatsapp_restricted(device)
+        raise_if_whatsapp_logged_out(device)
 
         if fail_on_contact_picker:
             try:
@@ -578,7 +617,7 @@ def click_send_button_with_keyboard_fallback(
             confirm_text=confirm_text,
         )
         return
-    except WhatsAppRestrictedError:
+    except (WhatsAppRestrictedError, WhatsAppLoggedOutError):
         raise
     except AutomationError as exc:
         if fail_on_contact_picker:
@@ -1024,7 +1063,7 @@ def send_whatsapp(
             print("[*] Focusing WhatsApp message field...")
             try:
                 message_entry = focus_message_entry(serial, whatsapp_package)
-            except WhatsAppRestrictedError:
+            except (WhatsAppRestrictedError, WhatsAppLoggedOutError):
                 raise
             except AutomationError as exc:
                 print(f"[WARN] {exc}")
@@ -1036,7 +1075,7 @@ def send_whatsapp(
                 try:
                     human_type_text(serial, text, message_entry=message_entry)
                     verify_message_typed(message_entry, text)
-                except WhatsAppRestrictedError:
+                except (WhatsAppRestrictedError, WhatsAppLoggedOutError):
                     raise
                 except Exception as exc:
                     # Catch broadly, not just AutomationError: a transient

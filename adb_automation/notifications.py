@@ -201,3 +201,75 @@ def dispatch_webhook(event):
     except requests.RequestException as exc:
         print(f"[WARN] Could not deliver webhook to {webhook_url}: {exc}")
         return False
+
+
+def whatsapp_package_for_business(business):
+    """Match the receiver's business-vs-messenger disambiguation (it keys off a
+    'w4b' substring in the package name)."""
+    return "com.whatsapp.w4b" if business else "com.whatsapp"
+
+
+def build_session_status_event(
+    device_label, business, reason, job_id=None, phone=None, event="whatsapp_restricted"
+):
+    """Device-health event (not an inbound message). Carries the device label the
+    receiver maps to its session plus the package so it can disambiguate a
+    business/non-business pair sharing one device."""
+    return {
+        "event": event,
+        "device_label": device_label,
+        "package": whatsapp_package_for_business(bool(business)),
+        "business": bool(business),
+        "job_id": job_id,
+        "phone": phone,
+        "reason": reason,
+        "detected_at": now_iso(),
+    }
+
+
+def notify_session_restricted(job, reason):
+    """Fire-and-forget: tell the receiver a device's WhatsApp is restricted so it
+    can mark the session unavailable. Never raises into the caller."""
+    try:
+        device = job.get("device") or {}
+        device_label = device.get("name") if isinstance(device, dict) else None
+        if not device_label:
+            print("[WARN] Cannot send restricted webhook: job has no device label.")
+            return False
+        event = build_session_status_event(
+            device_label=device_label,
+            business=job.get("business"),
+            reason=str(reason),
+            job_id=job.get("id"),
+            phone=job.get("phone"),
+        )
+        return dispatch_webhook(event)
+    except Exception as exc:  # defensive: webhook delivery must never break the worker
+        print(f"[WARN] Could not build/deliver restricted webhook: {exc}")
+        return False
+
+
+def notify_session_disconnected(job, reason, *, event):
+    """Fire-and-forget: tell the receiver a device's WhatsApp session is gone so it
+    can mark the session unavailable (CAIU) and pause its campaigns.
+
+    `event` is 'session_disconnected' (account logged out) or 'device_offline'
+    (the device dropped out of adb). Never raises into the caller."""
+    try:
+        device = job.get("device") or {}
+        device_label = device.get("name") if isinstance(device, dict) else None
+        if not device_label:
+            print("[WARN] Cannot send disconnect webhook: job has no device label.")
+            return False
+        payload = build_session_status_event(
+            device_label=device_label,
+            business=job.get("business"),
+            reason=str(reason),
+            job_id=job.get("id"),
+            phone=job.get("phone"),
+            event=event,
+        )
+        return dispatch_webhook(payload)
+    except Exception as exc:  # defensive: webhook delivery must never break the worker
+        print(f"[WARN] Could not build/deliver disconnect webhook: {exc}")
+        return False

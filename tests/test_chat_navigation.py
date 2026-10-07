@@ -18,7 +18,12 @@ class FakeSelector:
     def get_text(self):
         return self.text
 
-    def click(self):
+    def click(self, timeout=None, offset=None):
+        # Mirror uiautomator2's UiObject.click(self, timeout=None, offset=None)
+        # so production calls passing timeout= exercise the real click path
+        # instead of tripping a TypeError and silently falling back.
+        self.click_timeout = timeout
+        self.click_offset = offset
         if self.click_error is not None:
             raise self.click_error
         self.clicked = True

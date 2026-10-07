@@ -4,7 +4,12 @@ import unittest
 from unittest.mock import patch
 
 from adb_automation import devices, downloaded_media, queue_worker, send_queue
-from adb_automation.errors import AutomationError
+from adb_automation.errors import (
+    AdbError,
+    AutomationError,
+    WhatsAppLoggedOutError,
+    WhatsAppRestrictedError,
+)
 from tests.fake_mariadb import FakeMariaDBConnection
 
 
@@ -72,6 +77,117 @@ class QueueWorkerTests(unittest.TestCase):
         released = devices.find_device(self.conn, "phone-01")
         self.assertIsNone(released["worker_id"])
         self.assertIsNone(released["locked_until"])
+
+    def test_restricted_error_notifies_session_restricted(self):
+        job = self.enqueue()
+        restricted = WhatsAppRestrictedError("WhatsApp is restricted.")
+
+        with patch("builtins.print"), patch(
+            "adb_automation.queue_worker.ensure_device_ready"
+        ), patch("adb_automation.queue_worker.wake_and_unlock_device"), patch(
+            "adb_automation.queue_worker.mark_device_seen"
+        ), patch(
+            "adb_automation.queue_worker.send_whatsapp", side_effect=restricted
+        ), patch(
+            "adb_automation.queue_worker.notify_session_restricted"
+        ) as notify:
+            queue_worker.run_queue_once(self.conn, "queue-worker-1")
+
+        self.assertEqual(
+            send_queue.get_send_job(self.conn, job["id"])["status"],
+            send_queue.JOB_STATUS_FAILED,
+        )
+        notify.assert_called_once()
+        called_job, called_exc = notify.call_args.args
+        self.assertEqual(called_job["id"], job["id"])
+        self.assertIs(called_exc, restricted)
+
+    def test_non_restricted_error_does_not_notify_session_restricted(self):
+        self.enqueue()
+
+        with patch("builtins.print"), patch(
+            "adb_automation.queue_worker.ensure_device_ready"
+        ), patch("adb_automation.queue_worker.wake_and_unlock_device"), patch(
+            "adb_automation.queue_worker.mark_device_seen"
+        ), patch(
+            "adb_automation.queue_worker.send_whatsapp",
+            side_effect=AutomationError("some other failure"),
+        ), patch(
+            "adb_automation.queue_worker.notify_session_restricted"
+        ) as notify, patch(
+            "adb_automation.queue_worker.notify_session_disconnected"
+        ) as notify_disc:
+            queue_worker.run_queue_once(self.conn, "queue-worker-1")
+
+        notify.assert_not_called()
+        notify_disc.assert_not_called()
+
+    def test_logged_out_error_notifies_session_disconnected(self):
+        job = self.enqueue()
+        logged_out = WhatsAppLoggedOutError("WhatsApp session is logged out.")
+
+        with patch("builtins.print"), patch(
+            "adb_automation.queue_worker.ensure_device_ready"
+        ), patch("adb_automation.queue_worker.wake_and_unlock_device"), patch(
+            "adb_automation.queue_worker.mark_device_seen"
+        ), patch(
+            "adb_automation.queue_worker.send_whatsapp", side_effect=logged_out
+        ), patch(
+            "adb_automation.queue_worker.notify_session_restricted"
+        ) as notify_restricted, patch(
+            "adb_automation.queue_worker.notify_session_disconnected"
+        ) as notify_disc:
+            queue_worker.run_queue_once(self.conn, "queue-worker-1")
+
+        self.assertEqual(
+            send_queue.get_send_job(self.conn, job["id"])["status"],
+            send_queue.JOB_STATUS_FAILED,
+        )
+        notify_restricted.assert_not_called()
+        notify_disc.assert_called_once()
+        called_job, called_exc = notify_disc.call_args.args
+        self.assertEqual(called_job["id"], job["id"])
+        self.assertIs(called_exc, logged_out)
+        self.assertEqual(
+            notify_disc.call_args.kwargs.get("event"), "session_disconnected"
+        )
+
+    def test_device_offline_error_notifies_device_offline(self):
+        self.enqueue()
+        offline = AdbError("device R9 is not visible in adb devices.")
+
+        with patch("builtins.print"), patch(
+            "adb_automation.queue_worker.ensure_device_ready"
+        ), patch("adb_automation.queue_worker.wake_and_unlock_device"), patch(
+            "adb_automation.queue_worker.mark_device_seen"
+        ), patch(
+            "adb_automation.queue_worker.send_whatsapp", side_effect=offline
+        ), patch(
+            "adb_automation.queue_worker.notify_session_disconnected"
+        ) as notify_disc:
+            queue_worker.run_queue_once(self.conn, "queue-worker-1")
+
+        notify_disc.assert_called_once()
+        self.assertEqual(
+            notify_disc.call_args.kwargs.get("event"), "device_offline"
+        )
+
+    def test_unrelated_adb_error_does_not_notify(self):
+        self.enqueue()
+        other = AdbError("adb shell command failed with exit code 1")
+
+        with patch("builtins.print"), patch(
+            "adb_automation.queue_worker.ensure_device_ready"
+        ), patch("adb_automation.queue_worker.wake_and_unlock_device"), patch(
+            "adb_automation.queue_worker.mark_device_seen"
+        ), patch(
+            "adb_automation.queue_worker.send_whatsapp", side_effect=other
+        ), patch(
+            "adb_automation.queue_worker.notify_session_disconnected"
+        ) as notify_disc:
+            queue_worker.run_queue_once(self.conn, "queue-worker-1")
+
+        notify_disc.assert_not_called()
 
     def test_run_queue_once_uses_usb_transport_for_usb_device(self):
         usb_device = devices.add_device(

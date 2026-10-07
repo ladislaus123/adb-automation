@@ -160,6 +160,43 @@ That returns the raw file bytes with the original `Content-Type`.
 - **Best-effort, no retries.** If your endpoint is down or times out (5s), the event is dropped — it is not queued or retried. The event still exists in the database (see below), so you can reconcile via `GET /api/notifications` if needed.
 - **Fire-and-forget per notification**, delivered in the same request that does the ingest — no batching.
 
+## 2b. Device-health / session-status events (server → your service)
+
+Besides inbound messages, the queue worker emits **device-health events** to the same
+`ADB_AUTOMATION_WEBHOOK_URL` when a send job fails in a way that means the device's WhatsApp
+session is unavailable. They are discriminated from inbound messages by a top-level `event`
+field (inbound-message payloads have no `event`), so a single receiver endpoint can handle both.
+
+| `event` | Raised when | Downstream meaning |
+|---|---|---|
+| `whatsapp_restricted` | a job hits WhatsApp's "account restricted" screen (`WhatsAppRestrictedError`) | account restricted — mark session unavailable, pause campaigns |
+| `session_disconnected` | a job hits the login/registration screen, i.e. the account is logged out (`WhatsAppLoggedOutError`) | session gone — mark session down (CAIU), pause campaigns |
+| `device_offline` | the device drops out of adb (`AdbError` "… not visible in adb …") | device offline — often transient, so the receiver should **debounce** before acting |
+
+Only these three failure modes emit a webhook. Ordinary send failures (send button not found,
+media not attached, etc.) just fail the job and are **not** reported.
+
+**Body:**
+
+```json
+{
+  "event": "session_disconnected",
+  "device_label": "phone-01",
+  "package": "com.whatsapp.w4b",
+  "business": true,
+  "job_id": 94144,
+  "phone": "554797571861",
+  "reason": "WhatsApp session is logged out.",
+  "detected_at": "2026-10-01T01:39:38+00:00"
+}
+```
+
+- `device_label` — the same label used on inbound messages; the receiver maps it to its session.
+- `package` / `business` — let the receiver disambiguate a Messenger/Business pair sharing one device.
+- Same delivery semantics as above: no auth added, best-effort, no retries. Because `device_offline`
+  can fire repeatedly while a device is down, the receiver is expected to debounce it (e.g. require N
+  reports within a window) rather than react to a single one.
+
 ## 3. Reading events back from the server
 
 Useful for debugging, backfilling, or if you'd rather poll than receive webhooks.

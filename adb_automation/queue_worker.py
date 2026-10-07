@@ -23,7 +23,16 @@ from .devices import (
     release_device_lease,
 )
 from .downloaded_media import cleanup_downloaded_media_file
-from .errors import AutomationError
+from .errors import (
+    AdbError,
+    AutomationError,
+    WhatsAppLoggedOutError,
+    WhatsAppRestrictedError,
+)
+from .notifications import (
+    notify_session_disconnected,
+    notify_session_restricted,
+)
 from .send_queue import (
     claim_next_send_job,
     complete_send_job,
@@ -161,6 +170,18 @@ def process_claimed_job(conn, job):
     except Exception as exc:
         fail_send_job(conn, job["id"], exc)
         print(f"[-] Queue job {job['id']} failed: {exc}")
+        if isinstance(exc, WhatsAppRestrictedError):
+            # Tell the downstream service the device's WhatsApp is restricted so
+            # it can mark the session unavailable and pause its campaigns.
+            notify_session_restricted(job, exc)
+        elif isinstance(exc, WhatsAppLoggedOutError):
+            # Account logged out on the device -> the session is gone. Tell the
+            # downstream service so it can mark the session CAIU and pause it.
+            notify_session_disconnected(job, exc, event="session_disconnected")
+        elif isinstance(exc, AdbError) and "not visible in adb" in str(exc):
+            # Device dropped out of adb (offline/unplugged/rebooting). Often
+            # transient, so the downstream service debounces this before acting.
+            notify_session_disconnected(job, exc, event="device_offline")
     finally:
         try:
             release_device_lease(
