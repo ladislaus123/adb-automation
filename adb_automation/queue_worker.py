@@ -33,6 +33,7 @@ from .notifications import (
     notify_session_disconnected,
     notify_session_restricted,
 )
+from .recovery_queue import enqueue_recovery_job
 from .send_queue import (
     claim_next_send_job,
     complete_send_job,
@@ -129,6 +130,29 @@ def run_queue_once(conn, queue_worker_id_value=None):
     return True
 
 
+def start_recovery_for_job(conn, job, reason):
+    """Enqueue a WhatsApp ban-recovery job for the device of a failed send.
+
+    Idempotent (enqueue_recovery_job skips if one is already in flight) and
+    defensive: a recovery-enqueue failure must never mask the original send
+    failure or break the worker loop."""
+    try:
+        device = job.get("device") or {}
+        if not device:
+            return
+        enqueue_recovery_job(
+            conn,
+            device,
+            business=bool(job.get("business")),
+            # The device's OWN WhatsApp number (not the send recipient in
+            # job["phone"]); enqueue_recovery_job falls back to the device row.
+            phone=device.get("whatsapp_phone"),
+            reason=str(reason),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"[WARN] Could not enqueue recovery job: {exc}")
+
+
 def determine_known_contact(conn, job):
     if is_stochastic_job(job):
         return None
@@ -174,10 +198,14 @@ def process_claimed_job(conn, job):
             # Tell the downstream service the device's WhatsApp is restricted so
             # it can mark the session unavailable and pause its campaigns.
             notify_session_restricted(job, exc)
+            # Kick off (idempotently) the automated ban-recovery flow: request a
+            # review ("pedir analise"), wait for approval, then re-login.
+            start_recovery_for_job(conn, job, exc)
         elif isinstance(exc, WhatsAppLoggedOutError):
             # Account logged out on the device -> the session is gone. Tell the
             # downstream service so it can mark the session CAIU and pause it.
             notify_session_disconnected(job, exc, event="session_disconnected")
+            start_recovery_for_job(conn, job, exc)
         elif isinstance(exc, AdbError) and "not visible in adb" in str(exc):
             # Device dropped out of adb (offline/unplugged/rebooting). Often
             # transient, so the downstream service debounces this before acting.

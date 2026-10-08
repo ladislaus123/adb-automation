@@ -48,6 +48,18 @@ from .notifications import (
     save_incoming_notification,
 )
 from .queue_worker import start_queue_workers
+from .recovery_queue import (
+    RECOVERY_ACTIVE_STATUSES,
+    RECOVERY_STATUSES,
+    active_recovery_for_device,
+    cancel_recovery_job,
+    enqueue_recovery_job,
+    get_recovery_job,
+    list_recovery_jobs,
+    parse_recovery_limit,
+    retry_recovery_job,
+)
+from .recovery_worker import start_recovery_worker
 from .send_queue import (
     JOB_STATUSES,
     enqueue_send_job,
@@ -64,6 +76,7 @@ def create_app(start_queue_workers=True):
     register_frontend_routes(app)
     register_device_routes(app)
     register_job_routes(app)
+    register_recovery_routes(app)
     register_notification_routes(app)
     register_send_route(app, "/api/sendText", text_required=True)
     register_send_route(app, "/api/sendImage", media_required=True)
@@ -72,6 +85,7 @@ def create_app(start_queue_workers=True):
 
     if start_queue_workers:
         app.queue_worker_threads = start_queue_workers_fn()
+        app.recovery_worker_thread = start_recovery_worker()
 
     return app
 
@@ -131,6 +145,7 @@ def register_device_routes(app):
                 device_request["port"],
                 adb_transport=device_request["adb_transport"],
                 usb_serial=device_request["usb_serial"],
+                whatsapp_phone=device_request.get("whatsapp_phone"),
             )
             states = get_connected_device_states()
             return jsonify(
@@ -168,6 +183,7 @@ def register_device_routes(app):
                 port=device_request.get("port"),
                 adb_transport=device_request.get("adb_transport"),
                 usb_serial=device_request.get("usb_serial"),
+                whatsapp_phone=device_request.get("whatsapp_phone"),
             )
             states = get_connected_device_states()
             return jsonify(
@@ -409,6 +425,154 @@ def register_job_routes(app):
                 conn.close()
 
 
+def register_recovery_routes(app):
+    @app.get("/api/recovery")
+    def api_list_recovery_jobs():
+        auth_error = validate_api_key()
+        if auth_error:
+            return auth_error
+
+        try:
+            status = optional_query_string("status")
+            if status and status not in RECOVERY_STATUSES:
+                raise ValueError(
+                    "status must be one of: " + ", ".join(RECOVERY_STATUSES)
+                )
+            limit = parse_recovery_limit(request.args.get("limit", "50"))
+        except ValueError as exc:
+            return json_error(str(exc), 400)
+
+        conn = None
+        try:
+            conn = open_database()
+            init_database(conn)
+            jobs = list_recovery_jobs(conn, status=status, limit=limit)
+            return jsonify(
+                {
+                    "success": True,
+                    "jobs": [serialize_recovery_job(job) for job in jobs],
+                }
+            )
+        except (AutomationError, mysql.connector.Error) as exc:
+            return json_error(str(exc), 500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.get("/api/recovery/<int:job_id>")
+    def api_get_recovery_job(job_id):
+        auth_error = validate_api_key()
+        if auth_error:
+            return auth_error
+
+        conn = None
+        try:
+            conn = open_database()
+            init_database(conn)
+            job = get_recovery_job(conn, job_id)
+            if not job:
+                return json_error("recovery job not found.", 404)
+            return jsonify({"success": True, "job": serialize_recovery_job(job)})
+        except (AutomationError, mysql.connector.Error) as exc:
+            return json_error(str(exc), 500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.post("/api/recovery")
+    def api_create_recovery_job():
+        auth_error = validate_api_key()
+        if auth_error:
+            return auth_error
+
+        try:
+            payload = get_json_payload()
+            recovery_request = parse_recovery_request(payload)
+        except ValueError as exc:
+            return json_error(str(exc), 400)
+
+        conn = None
+        try:
+            conn = open_database()
+            init_database(conn)
+            device = find_device(conn, recovery_request["device"])
+            if not device:
+                raise ValueError(f"device not found: {recovery_request['device']}")
+            prior = active_recovery_for_device(conn, device["id"])
+            job = enqueue_recovery_job(
+                conn,
+                device,
+                business=recovery_request["business"],
+                phone=recovery_request["phone"],
+                reason=recovery_request["reason"],
+                lease_seconds=recovery_request["lease_seconds"],
+            )
+            return jsonify(
+                {
+                    "success": True,
+                    "created": prior is None,
+                    "job": serialize_recovery_job(job),
+                }
+            ), (201 if prior is None else 200)
+        except ValueError as exc:
+            status = 404 if str(exc).startswith("device not found") else 400
+            return json_error(str(exc), status)
+        except (AutomationError, mysql.connector.Error) as exc:
+            return json_error(str(exc), 500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.post("/api/recovery/<int:job_id>/retry")
+    def api_retry_recovery_job(job_id):
+        auth_error = validate_api_key()
+        if auth_error:
+            return auth_error
+
+        conn = None
+        try:
+            conn = open_database()
+            init_database(conn)
+            job = retry_recovery_job(conn, job_id)
+            return jsonify({"success": True, "job": serialize_recovery_job(job)})
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "not found" in message else 400
+            return json_error(message, status)
+        except (AutomationError, mysql.connector.Error) as exc:
+            return json_error(str(exc), 500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    @app.post("/api/recovery/<int:job_id>/cancel")
+    def api_cancel_recovery_job(job_id):
+        auth_error = validate_api_key()
+        if auth_error:
+            return auth_error
+
+        conn = None
+        try:
+            conn = open_database()
+            init_database(conn)
+            job = get_recovery_job(conn, job_id)
+            if not job:
+                return json_error("recovery job not found.", 404)
+            if job["status"] not in RECOVERY_ACTIVE_STATUSES:
+                return json_error(
+                    f"recovery job {job_id} is {job['status']}; "
+                    "only active jobs can be cancelled.",
+                    400,
+                )
+            job = cancel_recovery_job(conn, job_id)
+            return jsonify({"success": True, "job": serialize_recovery_job(job)})
+        except (AutomationError, mysql.connector.Error) as exc:
+            return json_error(str(exc), 500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+
 def register_notification_routes(app):
     @app.post("/api/notifications/ingest")
     def api_ingest_notification():
@@ -637,6 +801,7 @@ def parse_media_file_request(payload):
 
 def parse_device_request(payload):
     adb_transport = parse_adb_transport(payload.get("adb_transport"))
+    whatsapp_phone = parse_optional_whatsapp_phone(payload)
     if adb_transport == ADB_TRANSPORT_USB:
         return {
             "name": require_string(payload, "name"),
@@ -644,6 +809,7 @@ def parse_device_request(payload):
             "port": None,
             "adb_transport": adb_transport,
             "usb_serial": require_string(payload, "usb_serial"),
+            "whatsapp_phone": whatsapp_phone,
         }
 
     return {
@@ -652,16 +818,25 @@ def parse_device_request(payload):
         "port": parse_network_port(payload.get("port"), "port"),
         "adb_transport": adb_transport,
         "usb_serial": None,
+        "whatsapp_phone": whatsapp_phone,
     }
 
 
 def parse_device_update_request(payload):
-    allowed_fields = {"name", "ip", "port", "endpoint", "adb_transport", "usb_serial"}
+    allowed_fields = {
+        "name",
+        "ip",
+        "port",
+        "endpoint",
+        "adb_transport",
+        "usb_serial",
+        "whatsapp_phone",
+    }
     provided = allowed_fields.intersection(payload)
     if not provided:
         raise ValueError(
             "at least one of name, ip, port, endpoint, adb_transport, "
-            "or usb_serial is required."
+            "usb_serial, or whatsapp_phone is required."
         )
 
     parsed = {}
@@ -681,8 +856,26 @@ def parse_device_update_request(payload):
         parsed["port"] = parse_network_port(payload.get("port"), "port")
     if "usb_serial" in payload:
         parsed["usb_serial"] = require_string(payload, "usb_serial")
+    if "whatsapp_phone" in payload:
+        parsed["whatsapp_phone"] = parse_whatsapp_phone_value(payload.get("whatsapp_phone"))
 
     return parsed
+
+
+def parse_optional_whatsapp_phone(payload):
+    """Phone on create: omitted or blank means the device has no number yet."""
+    if "whatsapp_phone" not in payload:
+        return None
+    return parse_whatsapp_phone_value(payload.get("whatsapp_phone")) or None
+
+
+def parse_whatsapp_phone_value(value):
+    """Return the trimmed phone string. Blank and JSON null both mean clear."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("whatsapp_phone must be a string.")
+    return value.strip()
 
 
 def parse_endpoint(value):
@@ -737,12 +930,52 @@ def serialize_device(device, states):
         "ip": device["ip"],
         "port": device["port"],
         "usb_serial": device.get("usb_serial"),
+        "whatsapp_phone": device.get("whatsapp_phone"),
         "serial": serial,
         "adb_state": adb_state or "disconnected",
         "connected": adb_state == "device",
         "worker_id": device["worker_id"],
         "locked_until": device["locked_until"],
         "last_seen_at": device["last_seen_at"],
+    }
+
+
+def serialize_recovery_job(job):
+    return {
+        "id": job["id"],
+        "device_id": job["device_id"],
+        "device_label": job.get("device_label"),
+        "business": bool(job.get("business")),
+        "phone": job.get("phone"),
+        "status": job["status"],
+        "stage": job.get("stage"),
+        "reason": job.get("reason"),
+        "attempts": int(job.get("attempts") or 0),
+        "next_attempt_at": job.get("next_attempt_at"),
+        "worker_id": job.get("worker_id"),
+        "device_locked_until": job.get("device_locked_until"),
+        "lease_seconds": job.get("lease_seconds"),
+        "error": job.get("error"),
+        "detected_at": job.get("detected_at"),
+        "review_requested_at": job.get("review_requested_at"),
+        "recovered_at": job.get("recovered_at"),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+    }
+
+
+def parse_recovery_request(payload):
+    phone = None
+    if "phone" in payload:
+        phone = parse_whatsapp_phone_value(payload.get("phone")) or None
+    return {
+        "device": require_string(payload, "device"),
+        "business": parse_bool(payload.get("business", False), "business"),
+        "phone": phone,
+        "reason": optional_string(payload, "reason"),
+        "lease_seconds": parse_lease_seconds(payload.get("lease_seconds")),
     }
 
 

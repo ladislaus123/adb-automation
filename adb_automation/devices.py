@@ -79,6 +79,24 @@ def execute_write(conn, query, params=()):
     return lastrowid
 
 
+def normalize_whatsapp_phone(phone):
+    """Digits-only WhatsApp number for a device, or None when not provided.
+
+    Unlike the recipient phone used for sends this is optional (a device may not
+    have a recovery number configured), so an empty value yields None rather than
+    raising. A non-empty value that has no digits raises ValueError, same as
+    whatsapp.normalize_phone."""
+    if phone is None:
+        return None
+    text = str(phone).strip()
+    if not text:
+        return None
+    # Imported lazily: whatsapp imports adb, which imports this module.
+    from .whatsapp import normalize_phone
+
+    return normalize_phone(text)
+
+
 def add_device(
     conn,
     name,
@@ -86,6 +104,7 @@ def add_device(
     port=None,
     adb_transport=ADB_TRANSPORT_WIFI,
     usb_serial=None,
+    whatsapp_phone=None,
 ):
     name, ip, port, adb_transport, usb_serial = validate_device_fields(
         name,
@@ -94,17 +113,28 @@ def add_device(
         adb_transport,
         usb_serial,
     )
+    whatsapp_phone = normalize_whatsapp_phone(whatsapp_phone)
     timestamp = now_iso()
     try:
         device_id = execute_write(
             conn,
             """
             INSERT INTO devices (
-                name, ip, port, adb_transport, usb_serial, created_at, updated_at
+                name, ip, port, adb_transport, usb_serial, whatsapp_phone,
+                created_at, updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (name, ip, port, adb_transport, usb_serial, timestamp, timestamp),
+            (
+                name,
+                ip,
+                port,
+                adb_transport,
+                usb_serial,
+                whatsapp_phone,
+                timestamp,
+                timestamp,
+            ),
         )
         conn.commit()
     except mysql.connector.IntegrityError as exc:
@@ -150,6 +180,7 @@ def update_device(
     port=None,
     adb_transport=None,
     usb_serial=None,
+    whatsapp_phone=None,
 ):
     conn.start_transaction()
     try:
@@ -206,13 +237,20 @@ def update_device(
             if duplicate_endpoint and duplicate_endpoint["id"] != device["id"]:
                 raise ValueError("device IP/port already exists.")
 
+        next_whatsapp_phone = (
+            device.get("whatsapp_phone")
+            if whatsapp_phone is None
+            else normalize_whatsapp_phone(whatsapp_phone)
+        )
+
         timestamp = now_iso()
         execute_write(
             conn,
             """
             UPDATE devices
             SET name = %s, ip = %s, port = %s,
-                adb_transport = %s, usb_serial = %s, updated_at = %s
+                adb_transport = %s, usb_serial = %s, whatsapp_phone = %s,
+                updated_at = %s
             WHERE id = %s
             """,
             (
@@ -221,6 +259,7 @@ def update_device(
                 next_port,
                 next_transport,
                 next_usb_serial,
+                next_whatsapp_phone,
                 timestamp,
                 device["id"],
             ),

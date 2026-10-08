@@ -172,9 +172,16 @@ field (inbound-message payloads have no `event`), so a single receiver endpoint 
 | `whatsapp_restricted` | a job hits WhatsApp's "account restricted" screen (`WhatsAppRestrictedError`) | account restricted — mark session unavailable, pause campaigns |
 | `session_disconnected` | a job hits the login/registration screen, i.e. the account is logged out (`WhatsAppLoggedOutError`) | session gone — mark session down (CAIU), pause campaigns |
 | `device_offline` | the device drops out of adb (`AdbError` "… not visible in adb …") | device offline — often transient, so the receiver should **debounce** before acting |
+| `session_recovery_started` | a recovery job leaves `detected` and starts asking WhatsApp for a review | recovery is in progress; keep the session paused |
+| `session_recovered` | re-login reached the WhatsApp home screen | clear RESTRINGIDO/CAIU and resume the session |
+| `session_recovery_failed` | the recovery job ends `failed` (permanent ban, or retries exhausted) | session stays down; a person has to look at the device |
 
-Only these three failure modes emit a webhook. Ordinary send failures (send button not found,
-media not attached, etc.) just fail the job and are **not** reported.
+`whatsapp_restricted`, `session_disconnected`, and `device_offline` are the send-failure
+signals. Ordinary send failures (send button not found, media not attached, etc.) just fail
+the job and are **not** reported. The three `session_recovery_*` events come from the
+recovery worker, not from the send that noticed the ban. On those events `job_id` is the
+**recovery job** id and `phone` is the device's own WhatsApp number (`devices.whatsapp_phone`),
+not the recipient of the send that tripped detection.
 
 **Body:**
 
@@ -196,6 +203,42 @@ media not attached, etc.) just fail the job and are **not** reported.
 - Same delivery semantics as above: no auth added, best-effort, no retries. Because `device_offline`
   can fire repeatedly while a device is down, the receiver is expected to debounce it (e.g. require N
   reports within a window) rather than react to a single one.
+- `session_recovered` is the signal to clear a RESTRINGIDO/CAIU flag. `session_recovery_started`
+  fires once per recovery (not on every poll). A review that is still pending does not emit another
+  webhook; poll `GET /api/recovery/<id>` if you need the in-between states.
+
+### Recovery API
+
+The recovery worker runs in the API process (turn it off with `ADB_AUTOMATION_RECOVERY_ENABLED=0`).
+Send failures that raise `WhatsAppRestrictedError` or `WhatsAppLoggedOutError` open a recovery job
+automatically. One active job per device; calling create again returns that same job.
+
+Set the number that should be typed at re-login with `whatsapp_phone` on the device
+(`POST /api/devices` or `PUT /api/devices/<id>`). Digits only are stored (`+55 47 99999-0000`
+becomes `5547999990000`). Re-login reads the device row, so updating the number is enough for a
+job that was opened before the number was known.
+
+```
+GET    /api/recovery?status=review_pending&limit=50
+GET    /api/recovery/<id>
+POST   /api/recovery                 {"device": "phone-01", "business": false, "phone": "5547999990000", "reason": "manual"}
+POST   /api/recovery/<id>/retry      make next_attempt_at = now
+POST   /api/recovery/<id>/cancel     terminal cancelled
+X-API-Key: <ADB_AUTOMATION_API_KEY>
+```
+
+`status` is one of `detected`, `requesting_review`, `review_pending`, `relogin`, `recovered`,
+`failed`, `cancelled`. `review_pending` waits `ADB_AUTOMATION_RECOVERY_REVIEW_BACKOFF_SECONDS`
+(default 3600) between checks. `POST .../retry` skips that wait. Transient UI errors retry after
+60 seconds until `ADB_AUTOMATION_RECOVERY_MAX_ATTEMPTS` (default 240). A review that stays pending
+does not consume that budget.
+
+Re-login waits `ADB_AUTOMATION_OTP_WAIT_SECONDS` (default 120) for WhatsApp to auto-fill the SMS
+code, then tries a best-effort `content://sms` read. Selectors are English and Brazilian
+Portuguese and can be overridden with comma-separated env vars:
+`ADB_AUTOMATION_REVIEW_BUTTON_TEXTS`, `ADB_AUTOMATION_REVIEW_SUBMIT_TEXTS`,
+`ADB_AUTOMATION_REVIEW_PENDING_TEXTS`, `ADB_AUTOMATION_PERMANENT_BAN_TEXTS`,
+`ADB_AUTOMATION_AGREE_TEXTS`, `ADB_AUTOMATION_REGISTRATION_TEXTS`, `ADB_AUTOMATION_HOME_TEXTS`.
 
 ## 3. Reading events back from the server
 

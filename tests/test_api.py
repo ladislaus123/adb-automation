@@ -28,6 +28,8 @@ class ApiRouteTests(unittest.TestCase):
         try:
             self.assertEqual(response.status_code, 200)
             self.assertIn(b"Device Console", response.data)
+            self.assertIn(b"whatsapp_phone", response.data)
+            self.assertIn(b"recoveryBody", response.data)
         finally:
             response.close()
 
@@ -1035,6 +1037,143 @@ class ApiRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 404)
+
+
+class RecoveryApiTests(unittest.TestCase):
+    def setUp(self):
+        self.app = create_app(start_queue_workers=False)
+        self.client = self.app.test_client()
+        self.api_key = "test-api-key"
+        self.conn = FakeMariaDBConnection()
+        self.device = devices.add_device(
+            self.conn,
+            "phone-01",
+            "192.168.10.21",
+            5555,
+            whatsapp_phone="+55 47 99999-0000",
+        )
+
+    def auth_headers(self):
+        return {"X-API-Key": self.api_key}
+
+    def _patches(self):
+        return (
+            patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}),
+            patch("adb_automation.api.open_database", return_value=self.conn),
+            patch("adb_automation.api.init_database"),
+        )
+
+    def test_recovery_routes_require_auth(self):
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}):
+            response = self.client.get("/api/recovery")
+        self.assertEqual(response.status_code, 401)
+
+    def test_create_get_list_retry_and_cancel_recovery_job(self):
+        contexts = self._patches()
+        with contexts[0], contexts[1], contexts[2]:
+            created = self.client.post(
+                "/api/recovery",
+                json={"device": "phone-01", "business": True, "reason": "manual"},
+                headers=self.auth_headers(),
+            )
+            again = self.client.post(
+                "/api/recovery",
+                json={"device": "phone-01", "reason": "manual"},
+                headers=self.auth_headers(),
+            )
+            listed = self.client.get(
+                "/api/recovery?status=detected&limit=10",
+                headers=self.auth_headers(),
+            )
+
+        created_body = created.get_json()
+        again_body = again.get_json()
+        self.assertEqual(created.status_code, 201)
+        self.assertTrue(created_body["created"])
+        self.assertEqual(created_body["job"]["phone"], "5547999990000")
+        self.assertTrue(created_body["job"]["business"])
+        self.assertEqual(created_body["job"]["status"], "detected")
+        self.assertEqual(again.status_code, 200)
+        self.assertFalse(again_body["created"])
+        self.assertEqual(again_body["job"]["id"], created_body["job"]["id"])
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(len(listed.get_json()["jobs"]), 1)
+
+        job_id = created_body["job"]["id"]
+        with contexts[0], contexts[1], contexts[2]:
+            detail = self.client.get(
+                f"/api/recovery/{job_id}", headers=self.auth_headers()
+            )
+            retried = self.client.post(
+                f"/api/recovery/{job_id}/retry", headers=self.auth_headers()
+            )
+            cancelled = self.client.post(
+                f"/api/recovery/{job_id}/cancel", headers=self.auth_headers()
+            )
+            retry_after = self.client.post(
+                f"/api/recovery/{job_id}/retry", headers=self.auth_headers()
+            )
+
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.get_json()["job"]["device_label"], "phone-01")
+        self.assertEqual(retried.status_code, 200)
+        self.assertEqual(cancelled.status_code, 200)
+        self.assertEqual(cancelled.get_json()["job"]["status"], "cancelled")
+        self.assertEqual(retry_after.status_code, 400)
+
+    def test_recovery_create_unknown_device_and_bad_status(self):
+        contexts = self._patches()
+        with contexts[0], contexts[1], contexts[2]:
+            missing = self.client.post(
+                "/api/recovery",
+                json={"device": "missing"},
+                headers=self.auth_headers(),
+            )
+            bad_status = self.client.get(
+                "/api/recovery?status=nope", headers=self.auth_headers()
+            )
+            missing_job = self.client.get(
+                "/api/recovery/999", headers=self.auth_headers()
+            )
+
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(bad_status.status_code, 400)
+        self.assertEqual(missing_job.status_code, 404)
+
+    def test_device_routes_round_trip_whatsapp_phone(self):
+        conn = FakeMariaDBConnection()
+        with patch.dict(os.environ, {"ADB_AUTOMATION_API_KEY": self.api_key}), patch(
+            "adb_automation.api.open_database", return_value=conn
+        ), patch("adb_automation.api.init_database"), patch(
+            "adb_automation.api.get_connected_device_states", return_value={}
+        ):
+            created = self.client.post(
+                "/api/devices",
+                json={
+                    "name": "phone-01",
+                    "ip": "192.168.10.21",
+                    "port": 5555,
+                    "whatsapp_phone": "+55 (47) 98888-7777",
+                },
+                headers=self.auth_headers(),
+            )
+            device_id = created.get_json()["device"]["id"]
+            updated = self.client.put(
+                f"/api/devices/{device_id}",
+                json={"whatsapp_phone": ""},
+                headers=self.auth_headers(),
+            )
+            invalid = self.client.put(
+                f"/api/devices/{device_id}",
+                json={"whatsapp_phone": "abc"},
+                headers=self.auth_headers(),
+            )
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.get_json()["device"]["whatsapp_phone"], "5547988887777")
+        self.assertEqual(updated.status_code, 200)
+        self.assertIsNone(updated.get_json()["device"]["whatsapp_phone"])
+        self.assertEqual(invalid.status_code, 400)
 
 
 if __name__ == "__main__":

@@ -79,6 +79,9 @@ class QueueWorkerTests(unittest.TestCase):
         self.assertIsNone(released["locked_until"])
 
     def test_restricted_error_notifies_session_restricted(self):
+        devices.update_device(
+            self.conn, self.device["id"], whatsapp_phone="+55 47 99999-0000"
+        )
         job = self.enqueue()
         restricted = WhatsAppRestrictedError("WhatsApp is restricted.")
 
@@ -101,6 +104,23 @@ class QueueWorkerTests(unittest.TestCase):
         called_job, called_exc = notify.call_args.args
         self.assertEqual(called_job["id"], job["id"])
         self.assertIs(called_exc, restricted)
+        self.assertEqual(len(self.conn.recovery_jobs), 1)
+        self.assertEqual(self.conn.recovery_jobs[0]["device_id"], self.device["id"])
+        self.assertEqual(self.conn.recovery_jobs[0]["status"], "detected")
+        self.assertEqual(self.conn.recovery_jobs[0]["phone"], "5547999990000")
+        self.assertEqual(self.conn.recovery_jobs[0]["business"], 1)
+
+        self.enqueue()
+        with patch("builtins.print"), patch(
+            "adb_automation.queue_worker.ensure_device_ready"
+        ), patch("adb_automation.queue_worker.wake_and_unlock_device"), patch(
+            "adb_automation.queue_worker.mark_device_seen"
+        ), patch(
+            "adb_automation.queue_worker.send_whatsapp", side_effect=restricted
+        ), patch("adb_automation.queue_worker.notify_session_restricted"):
+            queue_worker.run_queue_once(self.conn, "queue-worker-1")
+
+        self.assertEqual(len(self.conn.recovery_jobs), 1)
 
     def test_non_restricted_error_does_not_notify_session_restricted(self):
         self.enqueue()
@@ -121,6 +141,7 @@ class QueueWorkerTests(unittest.TestCase):
 
         notify.assert_not_called()
         notify_disc.assert_not_called()
+        self.assertEqual(self.conn.recovery_jobs, [])
 
     def test_logged_out_error_notifies_session_disconnected(self):
         job = self.enqueue()
@@ -151,6 +172,9 @@ class QueueWorkerTests(unittest.TestCase):
         self.assertEqual(
             notify_disc.call_args.kwargs.get("event"), "session_disconnected"
         )
+        self.assertEqual(len(self.conn.recovery_jobs), 1)
+        self.assertEqual(self.conn.recovery_jobs[0]["status"], "detected")
+        self.assertIn("logged out", self.conn.recovery_jobs[0]["reason"])
 
     def test_device_offline_error_notifies_device_offline(self):
         self.enqueue()
@@ -171,6 +195,7 @@ class QueueWorkerTests(unittest.TestCase):
         self.assertEqual(
             notify_disc.call_args.kwargs.get("event"), "device_offline"
         )
+        self.assertEqual(self.conn.recovery_jobs, [])
 
     def test_unrelated_adb_error_does_not_notify(self):
         self.enqueue()

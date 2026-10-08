@@ -273,3 +273,37 @@ def notify_session_disconnected(job, reason, *, event):
     except Exception as exc:  # defensive: webhook delivery must never break the worker
         print(f"[WARN] Could not build/deliver disconnect webhook: {exc}")
         return False
+
+
+RECOVERY_EVENT_STARTED = "session_recovery_started"
+RECOVERY_EVENT_RECOVERED = "session_recovered"
+RECOVERY_EVENT_FAILED = "session_recovery_failed"
+
+
+def notify_recovery_event(recovery_job, *, event, reason=None):
+    """Fire-and-forget: report progress of the ban -> review -> re-login recovery
+    for a device so the receiver can update the session state (e.g. clear
+    RESTRINGIDO/CAIU once `session_recovered` arrives). Never raises.
+
+    `recovery_job` is a whatsapp_recovery_jobs row (it carries `device_label`,
+    `business`, `phone` and `id` directly)."""
+    try:
+        device_label = recovery_job.get("device_label")
+        if not device_label:
+            device = recovery_job.get("device") or {}
+            device_label = device.get("name") if isinstance(device, dict) else None
+        if not device_label:
+            print("[WARN] Cannot send recovery webhook: job has no device label.")
+            return False
+        payload = build_session_status_event(
+            device_label=device_label,
+            business=recovery_job.get("business"),
+            reason=str(reason) if reason is not None else recovery_job.get("status"),
+            job_id=recovery_job.get("id"),
+            phone=recovery_job.get("phone"),
+            event=event,
+        )
+        return dispatch_webhook(payload)
+    except Exception as exc:  # defensive: delivery must never break the worker
+        print(f"[WARN] Could not build/deliver recovery webhook: {exc}")
+        return False

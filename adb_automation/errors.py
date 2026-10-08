@@ -21,3 +21,18 @@ class WhatsAppLoggedOutError(AutomationError):
 
 class WhatsAppNotInstalledError(AutomationError):
     """Raised when the requested WhatsApp package is not installed."""
+
+
+class WhatsAppRecoveryError(AutomationError):
+    """Base for failures while driving the ban -> review -> re-login recovery
+    flow (requesting an account review or re-registering the number)."""
+
+
+class ReviewUnavailableError(WhatsAppRecoveryError):
+    """Raised when the 'request a review' (pedir analise) action cannot be
+    found/performed on the restricted screen."""
+
+
+class OtpNotReceivedError(WhatsAppRecoveryError):
+    """Raised when re-login could not be confirmed: WhatsApp did not auto-fill
+    the SMS code and no code could be read back within the wait window."""

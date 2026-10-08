@@ -3,13 +3,36 @@ import copy
 import mysql.connector
 
 
+def _split_sql_assignments(set_clause):
+    """Split a SET clause on commas that are not inside parentheses."""
+    parts = []
+    buf = []
+    depth = 0
+    for char in set_clause:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append("".join(buf).strip())
+            buf = []
+            continue
+        buf.append(char)
+    tail = "".join(buf).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
 class FakeMariaDBConnection:
     def __init__(self):
         self.devices = []
         self.send_jobs = []
+        self.recovery_jobs = []
         self.received_notifications = []
         self.next_id = 1
         self.next_job_id = 1
+        self.next_recovery_id = 1
         self.next_notification_id = 1
         self.closed = False
         self.transactions_started = 0
@@ -56,12 +79,39 @@ class FakeCursor:
             self._insert_received_notification(params)
             return
 
+        if normalized.startswith("insert into whatsapp_recovery_jobs"):
+            self._insert_recovery_job(params)
+            return
+
         if normalized.startswith("select * from devices where id"):
             self.result = self._find_by_id(params[0])
             return
 
         if normalized.startswith("select * from send_jobs where id"):
             self.result = self._find_job_by_id(params[0])
+            return
+
+        if normalized.startswith("select * from whatsapp_recovery_jobs where id"):
+            self.result = self._find_recovery_by_id(params[0])
+            return
+
+        if normalized.startswith("select * from whatsapp_recovery_jobs where device_id"):
+            self.result = self._find_active_recovery(params[0], params[1:])
+            return
+
+        if (
+            normalized.startswith("select * from whatsapp_recovery_jobs where status in")
+            and "next_attempt_at" in normalized
+        ):
+            self.result = self._list_due_recovery_jobs(params[:-1], params[-1])
+            return
+
+        if normalized.startswith("select * from whatsapp_recovery_jobs where status ="):
+            self.result = self._list_recovery_jobs(status=params[0], limit=params[1])
+            return
+
+        if normalized.startswith("select * from whatsapp_recovery_jobs order by id desc"):
+            self.result = self._list_recovery_jobs(limit=params[0])
             return
 
         if normalized.startswith("select * from received_notifications where id"):
@@ -143,6 +193,10 @@ class FakeCursor:
             self._mark_seen(params)
             return
 
+        if normalized.startswith("update whatsapp_recovery_jobs"):
+            self._update_recovery_job(normalized, params)
+            return
+
         if normalized.startswith("update send_jobs set status = %s, queue_worker_id"):
             self._claim_job(params)
             return
@@ -200,12 +254,26 @@ class FakeCursor:
         self.closed = True
 
     def _insert_device(self, params):
+        whatsapp_phone = None
         if len(params) == 5:
             name, ip, port, created_at, updated_at = params
             adb_transport = "wifi"
             usb_serial = None
-        else:
+        elif len(params) == 7:
             name, ip, port, adb_transport, usb_serial, created_at, updated_at = params
+        elif len(params) == 8:
+            (
+                name,
+                ip,
+                port,
+                adb_transport,
+                usb_serial,
+                whatsapp_phone,
+                created_at,
+                updated_at,
+            ) = params
+        else:
+            raise AssertionError(f"unexpected device insert params: {len(params)}")
         for device in self.conn.devices:
             endpoint_duplicate = (
                 ip is not None
@@ -226,6 +294,7 @@ class FakeCursor:
             "port": port,
             "adb_transport": adb_transport,
             "usb_serial": usb_serial,
+            "whatsapp_phone": whatsapp_phone,
             "worker_id": None,
             "locked_until": None,
             "last_seen_at": None,
@@ -433,18 +502,36 @@ class FakeCursor:
         device["updated_at"] = updated_at
 
     def _update_device(self, params):
+        whatsapp_phone = None
+        update_phone = False
         if len(params) == 5:
             name, ip, port, updated_at, device_id = params
             adb_transport = "wifi"
             usb_serial = None
-        else:
+        elif len(params) == 7:
             name, ip, port, adb_transport, usb_serial, updated_at, device_id = params
+        elif len(params) == 8:
+            (
+                name,
+                ip,
+                port,
+                adb_transport,
+                usb_serial,
+                whatsapp_phone,
+                updated_at,
+                device_id,
+            ) = params
+            update_phone = True
+        else:
+            raise AssertionError(f"unexpected device update params: {len(params)}")
         device = self._device_ref(device_id)
         device["name"] = name
         device["ip"] = ip
         device["port"] = port
         device["adb_transport"] = adb_transport
         device["usb_serial"] = usb_serial
+        if update_phone:
+            device["whatsapp_phone"] = whatsapp_phone
         device["updated_at"] = updated_at
 
     def _device_column(self, column):
@@ -455,6 +542,7 @@ class FakeCursor:
             "port": ("port", "int", "YES"),
             "adb_transport": ("adb_transport", "varchar(16)", "NO"),
             "usb_serial": ("usb_serial", "varchar(255)", "YES"),
+            "whatsapp_phone": ("whatsapp_phone", "varchar(64)", "YES"),
         }
         return columns.get(column)
 
@@ -513,6 +601,134 @@ class FakeCursor:
             job["error"] = error
             job["finished_at"] = finished_at
             job["updated_at"] = updated_at
+
+    def _insert_recovery_job(self, params):
+        (
+            device_id,
+            device_label,
+            business,
+            phone,
+            status,
+            stage,
+            reason,
+            attempts,
+            next_attempt_at,
+            lease_seconds,
+            detected_at,
+            created_at,
+            updated_at,
+        ) = params
+        job = {
+            "id": self.conn.next_recovery_id,
+            "device_id": device_id,
+            "device_label": device_label,
+            "business": business,
+            "phone": phone,
+            "status": status,
+            "stage": stage,
+            "reason": reason,
+            "attempts": attempts,
+            "next_attempt_at": next_attempt_at,
+            "worker_id": None,
+            "device_locked_until": None,
+            "lease_seconds": lease_seconds,
+            "error": None,
+            "detected_at": detected_at,
+            "review_requested_at": None,
+            "recovered_at": None,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "started_at": None,
+            "finished_at": None,
+        }
+        self.conn.recovery_jobs.append(job)
+        self.lastrowid = job["id"]
+        self.conn.next_recovery_id += 1
+
+    def _find_recovery_by_id(self, job_id):
+        for job in self.conn.recovery_jobs:
+            if job["id"] == job_id:
+                return copy.deepcopy(job)
+        return None
+
+    def _find_active_recovery(self, device_id, statuses):
+        matches = [
+            job for job in self.conn.recovery_jobs
+            if job["device_id"] == device_id and job["status"] in statuses
+        ]
+        matches.sort(key=lambda job: job["id"], reverse=True)
+        return copy.deepcopy(matches[0]) if matches else None
+
+    def _list_due_recovery_jobs(self, statuses, current):
+        jobs = []
+        for job in self.conn.recovery_jobs:
+            if job["status"] not in statuses:
+                continue
+            due_at = job.get("next_attempt_at")
+            if due_at is not None and due_at > current:
+                continue
+            jobs.append(copy.deepcopy(job))
+        jobs.sort(key=lambda job: job["id"])
+        return jobs
+
+    def _list_recovery_jobs(self, status=None, limit=None):
+        jobs = list(self.conn.recovery_jobs)
+        if status is not None:
+            jobs = [job for job in jobs if job["status"] == status]
+        jobs.sort(key=lambda job: job["id"], reverse=True)
+        if limit is not None:
+            jobs = jobs[:limit]
+        return [copy.deepcopy(job) for job in jobs]
+
+    def _recovery_ref(self, job_id):
+        for job in self.conn.recovery_jobs:
+            if job["id"] == job_id:
+                return job
+        raise AssertionError(f"recovery job not found: {job_id}")
+
+    def _update_recovery_job(self, normalized, params):
+        set_at = normalized.index(" set ") + len(" set ")
+        where_at = normalized.rindex(" where ")
+        set_clause = normalized[set_at:where_at]
+        where_clause = normalized[where_at:]
+        where_placeholders = where_clause.count("%s")
+        if where_placeholders < 1:
+            raise AssertionError(f"recovery update is missing an id: {normalized}")
+        values = list(params)
+        job_id = values[-where_placeholders]
+        value_params = values[:-where_placeholders]
+        where_values = values[len(values) - where_placeholders + 1:]
+        job = self._recovery_ref(job_id)
+        if "status in" in where_clause and job["status"] not in where_values:
+            return
+
+        index = 0
+        for assignment in _split_sql_assignments(set_clause):
+            lowered = " ".join(assignment.lower().split())
+            if "attempts = attempts + 1" in lowered:
+                job["attempts"] = int(job.get("attempts") or 0) + 1
+                continue
+            column, expression = assignment.split("=", 1)
+            column = column.strip()
+            expression = expression.strip()
+            if "coalesce(" in lowered:
+                value = value_params[index]
+                index += 1
+                if job.get(column) is None:
+                    job[column] = value
+                continue
+            if expression == "null":
+                job[column] = None
+                continue
+            if expression == "%s":
+                job[column] = value_params[index]
+                index += 1
+                continue
+            raise AssertionError(f"unsupported recovery assignment: {assignment}")
+        if index != len(value_params):
+            raise AssertionError(
+                f"unused recovery params {value_params[index:]} for {normalized}"
+            )
 
     def _device_ref(self, device_id):
         for device in self.conn.devices:

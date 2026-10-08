@@ -172,6 +172,16 @@ def migrate_devices_schema(cursor):
             errorcode.ER_DUP_KEYNAME,
         )
 
+    if not _device_column_exists(cursor, "whatsapp_phone"):
+        _execute_ignoring_errno(
+            cursor,
+            """
+            ALTER TABLE devices
+            ADD COLUMN whatsapp_phone VARCHAR(64) NULL AFTER usb_serial
+            """,
+            errorcode.ER_DUP_FIELDNAME,
+        )
+
 
 def migrate_received_notifications_schema(cursor):
     if not _received_notification_column_exists(cursor, "dedup_key"):
@@ -207,6 +217,7 @@ def init_database(conn):
                 port INTEGER,
                 adb_transport VARCHAR(16) NOT NULL DEFAULT 'wifi',
                 usb_serial VARCHAR(255),
+                whatsapp_phone VARCHAR(64),
                 worker_id VARCHAR(255),
                 locked_until VARCHAR(32),
                 last_seen_at VARCHAR(32),
@@ -245,6 +256,36 @@ def init_database(conn):
                 PRIMARY KEY (id),
                 KEY idx_send_jobs_status_id (status, id),
                 KEY idx_send_jobs_device_status (device_id, status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whatsapp_recovery_jobs (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                device_id BIGINT UNSIGNED NOT NULL,
+                device_label VARCHAR(255),
+                business TINYINT(1) NOT NULL DEFAULT 0,
+                phone VARCHAR(64),
+                status VARCHAR(32) NOT NULL,
+                stage VARCHAR(64),
+                reason TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at VARCHAR(32),
+                worker_id VARCHAR(255),
+                device_locked_until VARCHAR(32),
+                lease_seconds INTEGER NOT NULL,
+                error TEXT,
+                detected_at VARCHAR(32),
+                review_requested_at VARCHAR(32),
+                recovered_at VARCHAR(32),
+                created_at VARCHAR(32) NOT NULL,
+                updated_at VARCHAR(32) NOT NULL,
+                started_at VARCHAR(32),
+                finished_at VARCHAR(32),
+                PRIMARY KEY (id),
+                KEY idx_recovery_status_next (status, next_attempt_at),
+                KEY idx_recovery_device_status (device_id, status)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """
         )

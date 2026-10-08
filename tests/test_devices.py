@@ -236,6 +236,36 @@ class DeviceDatabaseTests(unittest.TestCase):
         with self.assertRaises(DeviceLockError):
             devices.update_device(self.conn, device["id"], ip="192.168.10.22")
 
+    def test_whatsapp_phone_is_normalized_and_optional(self):
+        self.assertIsNone(devices.normalize_whatsapp_phone(None))
+        self.assertIsNone(devices.normalize_whatsapp_phone("  "))
+        self.assertEqual(
+            devices.normalize_whatsapp_phone("+55 (47) 99999-0000"),
+            "5547999990000",
+        )
+        with self.assertRaisesRegex(ValueError, "phone number is required"):
+            devices.normalize_whatsapp_phone("not-a-number")
+
+        device = devices.add_device(
+            self.conn,
+            "phone-01",
+            "192.168.10.21",
+            5555,
+            whatsapp_phone="+55 47 98888-7777",
+        )
+        self.assertEqual(device["whatsapp_phone"], "5547988887777")
+
+        renamed = devices.update_device(self.conn, device["id"], name="phone-main")
+        self.assertEqual(renamed["whatsapp_phone"], "5547988887777")
+
+        cleared = devices.update_device(self.conn, device["id"], whatsapp_phone="")
+        self.assertIsNone(cleared["whatsapp_phone"])
+
+        restored = devices.update_device(
+            self.conn, device["id"], whatsapp_phone="5547988887777"
+        )
+        self.assertEqual(restored["whatsapp_phone"], "5547988887777")
+
 
 if __name__ == "__main__":
     unittest.main()

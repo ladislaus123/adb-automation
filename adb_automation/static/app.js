@@ -12,6 +12,8 @@
     refreshButton: document.getElementById("refreshButton"),
     devicesBody: document.getElementById("devicesBody"),
     deviceCount: document.getElementById("deviceCount"),
+    recoveryBody: document.getElementById("recoveryBody"),
+    recoveryCount: document.getElementById("recoveryCount"),
     lastRefresh: document.getElementById("lastRefresh"),
     pairForm: document.getElementById("pairForm"),
     deviceForm: document.getElementById("deviceForm"),
@@ -28,6 +30,12 @@
   let lastPairIp = "";
   let currentDevices = [];
   let editingDeviceId = null;
+  const ACTIVE_RECOVERY = new Set([
+    "detected",
+    "requesting_review",
+    "review_pending",
+    "relogin",
+  ]);
 
   function init() {
     elements.apiKeyInput.value = localStorage.getItem(API_KEY_STORAGE) || "";
@@ -78,6 +86,7 @@
     elements.apiKeyInput.value = "";
     updateApiKeyState();
     renderDevices([]);
+    renderRecovery([]);
     elements.lastRefresh.textContent = "Not refreshed";
     showToast("API key cleared.", "success");
   }
@@ -137,6 +146,7 @@
         currentDevices = devices;
         elements.deviceCount.textContent = `${devices.length} registered`;
       }
+      await refreshRecovery();
       elements.lastRefresh.textContent = `Refreshed ${new Date().toLocaleTimeString()}`;
       if (!silent) {
         showToast("Device list refreshed.", "success");
@@ -213,6 +223,12 @@
 
     wrap.appendChild(name);
     wrap.appendChild(serial);
+    if (device.whatsapp_phone) {
+      const phone = document.createElement("span");
+      phone.className = "serial";
+      phone.textContent = device.whatsapp_phone;
+      wrap.appendChild(phone);
+    }
     cell.appendChild(wrap);
     return cell;
   }
@@ -222,7 +238,18 @@
     row.className = "editing-row";
     row.dataset.deviceId = String(device.id);
 
-    row.appendChild(renderEditInputCell("name", device.name, "Device name"));
+    const nameCell = renderEditInputCell("name", device.name, "Device name");
+    const phoneInput = document.createElement("input");
+    phoneInput.className = "inline-input";
+    phoneInput.name = "whatsapp_phone";
+    phoneInput.type = "text";
+    phoneInput.inputMode = "tel";
+    phoneInput.autocomplete = "off";
+    phoneInput.placeholder = "WhatsApp number";
+    phoneInput.setAttribute("aria-label", "WhatsApp number");
+    phoneInput.value = device.whatsapp_phone || "";
+    nameCell.appendChild(phoneInput);
+    row.appendChild(nameCell);
     row.appendChild(renderTransportEditCell(device, row));
     row.appendChild(renderConnectionEditCell(device));
     row.appendChild(renderAdbCell(device));
@@ -428,6 +455,10 @@
       body.ip = row.querySelector('input[name="ip"]').value.trim();
       body.port = row.querySelector('input[name="port"]').value.trim();
     }
+    const phoneInput = row.querySelector('input[name="whatsapp_phone"]');
+    if (phoneInput) {
+      body.whatsapp_phone = phoneInput.value.trim();
+    }
 
     setRowBusy(row, true);
 
@@ -533,6 +564,90 @@
     row.querySelectorAll("button, input, select").forEach((control) => {
       control.disabled = busy;
     });
+  }
+
+  async function refreshRecovery() {
+    if (!elements.recoveryBody) {
+      return;
+    }
+    try {
+      const payload = await apiRequest("/api/recovery?limit=50");
+      renderRecovery(payload.jobs || []);
+    } catch (error) {
+      renderRecovery([]);
+      throw error;
+    }
+  }
+
+  function renderRecovery(jobs) {
+    if (!elements.recoveryBody) {
+      return;
+    }
+    elements.recoveryBody.textContent = "";
+    elements.recoveryCount.textContent = `${jobs.length} jobs`;
+    if (!jobs.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 8;
+      cell.className = "empty-cell";
+      cell.textContent = "No recovery jobs";
+      row.appendChild(cell);
+      elements.recoveryBody.appendChild(row);
+      return;
+    }
+
+    jobs.forEach((job) => {
+      const row = document.createElement("tr");
+      row.appendChild(textCell(job.id));
+      row.appendChild(textCell(job.device_label || job.device_id));
+      row.appendChild(textCell(formatValue(job.phone)));
+      row.appendChild(textCell(job.status));
+      row.appendChild(textCell(job.attempts));
+      row.appendChild(textCell(formatValue(job.next_attempt_at)));
+      row.appendChild(textCell(formatValue(job.error)));
+      row.appendChild(renderRecoveryActions(job));
+      elements.recoveryBody.appendChild(row);
+    });
+  }
+
+  function renderRecoveryActions(job) {
+    const cell = document.createElement("td");
+    const wrap = document.createElement("div");
+    cell.className = "action-cell";
+    wrap.className = "row-actions";
+    if (!ACTIVE_RECOVERY.has(job.status)) {
+      cell.appendChild(wrap);
+      return cell;
+    }
+
+    const retryButton = document.createElement("button");
+    retryButton.className = "button secondary";
+    retryButton.type = "button";
+    retryButton.textContent = "Retry";
+    retryButton.addEventListener("click", () => runRecoveryAction(job.id, "retry", retryButton));
+
+    const cancelButton = document.createElement("button");
+    cancelButton.className = "button secondary";
+    cancelButton.type = "button";
+    cancelButton.textContent = "Cancel";
+    cancelButton.addEventListener("click", () => runRecoveryAction(job.id, "cancel", cancelButton));
+
+    wrap.appendChild(retryButton);
+    wrap.appendChild(cancelButton);
+    cell.appendChild(wrap);
+    return cell;
+  }
+
+  async function runRecoveryAction(jobId, action, button) {
+    button.disabled = true;
+    try {
+      await apiRequest(`/api/recovery/${jobId}/${action}`, { method: "POST" });
+      showToast(action === "cancel" ? "Recovery cancelled." : "Recovery queued now.", "success");
+      await refreshDevices(true);
+    } catch (error) {
+      showToast(error.message, "error");
+      button.disabled = false;
+    }
   }
 
   function textCell(value) {

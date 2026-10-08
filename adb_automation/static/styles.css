@@ -108,6 +108,10 @@ h2 {
   min-width: 0;
 }
 
+.recovery-header {
+  margin-top: 22px;
+}
+
 .panel-header {
   display: flex;
   align-items: flex-start;

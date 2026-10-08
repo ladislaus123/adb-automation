@@ -318,6 +318,13 @@ ADB_AUTOMATION_APPIUM_REBOOT_ON_WEDGE=0              # Reboot device as last res
 ADB_AUTOMATION_QUEUE_WORKERS=          # Leave blank to use CPU count
 ADB_AUTOMATION_QUEUE_POLL_SECONDS=1    # How often workers poll for new jobs
 
+# ── WhatsApp ban recovery ─────────────────────────────────────────────────────
+ADB_AUTOMATION_RECOVERY_ENABLED=1                 # 0 turns the recovery worker off
+ADB_AUTOMATION_RECOVERY_POLL_SECONDS=5            # Idle poll when no recovery job is due
+ADB_AUTOMATION_RECOVERY_REVIEW_BACKOFF_SECONDS=3600  # Wait between review-status checks
+ADB_AUTOMATION_RECOVERY_MAX_ATTEMPTS=240          # Transient retries before the job fails
+ADB_AUTOMATION_OTP_WAIT_SECONDS=120               # Wait for SMS auto-fill during re-login
+
 # ── Device leasing ────────────────────────────────────────────────────────────
 ADB_AUTOMATION_LEASE_SECONDS=600       # How long a device is locked per job (seconds)
 ```

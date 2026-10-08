@@ -83,6 +83,9 @@ class FakeSchemaCursor:
         if "add column usb_serial" in normalized:
             self.columns["usb_serial"] = ("usb_serial", "varchar(255)", "YES")
             return
+        if "add column whatsapp_phone" in normalized:
+            self.columns["whatsapp_phone"] = ("whatsapp_phone", "varchar(64)", "YES")
+            return
         if "modify ip" in normalized:
             self.columns["ip"] = ("ip", "varchar(255)", "YES")
             return
@@ -142,6 +145,7 @@ class DatabaseMigrationTests(unittest.TestCase):
 
         self.assertEqual(cursor.columns["adb_transport"][2], "NO")
         self.assertEqual(cursor.columns["usb_serial"][2], "YES")
+        self.assertEqual(cursor.columns["whatsapp_phone"][2], "YES")
         self.assertEqual(cursor.columns["ip"][2], "YES")
         self.assertEqual(cursor.columns["port"][2], "YES")
         self.assertIn("uq_devices_usb_serial", cursor.indexes)
@@ -151,7 +155,7 @@ class DatabaseMigrationTests(unittest.TestCase):
 
         db.migrate_devices_schema(cursor)
 
-        self.assertEqual(len(cursor.ignored_duplicates), 3)
+        self.assertEqual(len(cursor.ignored_duplicates), 4)
 
 
 if __name__ == "__main__":

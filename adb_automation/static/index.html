@@ -48,6 +48,34 @@
             </tbody>
           </table>
         </div>
+
+        <div class="panel-header recovery-header">
+          <div>
+            <h2 id="recoveryHeading">Recovery</h2>
+            <p id="recoveryCount" class="subtle">0 jobs</p>
+          </div>
+        </div>
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Device</th>
+                <th>Phone</th>
+                <th>Status</th>
+                <th>Attempts</th>
+                <th>Next attempt</th>
+                <th>Error</th>
+                <th class="action-column">Action</th>
+              </tr>
+            </thead>
+            <tbody id="recoveryBody">
+              <tr>
+                <td colspan="8" class="empty-cell">No recovery jobs</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <aside class="side-stack">
@@ -127,6 +155,10 @@
             <label id="usbDeviceFields" hidden>
               <span>USB serial</span>
               <input name="usb_serial" type="text" autocomplete="off" disabled>
+            </label>
+            <label>
+              <span>WhatsApp number</span>
+              <input name="whatsapp_phone" type="text" inputmode="tel" autocomplete="off" placeholder="5547999999999">
             </label>
             <button class="button primary" type="submit">Save Device</button>
           </form>
